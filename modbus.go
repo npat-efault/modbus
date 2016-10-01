@@ -75,7 +75,7 @@ var (
 )
 
 // ReqRes is a modbus request, or a modbus response. This interface is
-// implemented by all the [Req|Res]XXX types (structures).
+// implemented by all the [Req|Res|ReqRes]XXX types (structures).
 type ReqRes interface {
 	fmbReqRes() // Dummy. Flag type as modbus request-or-response
 	Pack([]byte) ([]byte, error)
@@ -83,8 +83,8 @@ type ReqRes interface {
 	FnCode() FnCode
 }
 
-// Req is a modbus request. This interface is
-// implemented by all the ReqXXX types (structures).
+// Req is a modbus request. This interface is implemented by all the
+// ReqXXX and ReqResXXX types (structures).
 type Req interface {
 	fmbReq() // Dummy. Flag type as modbus request
 	Pack([]byte) ([]byte, error)
@@ -92,8 +92,8 @@ type Req interface {
 	FnCode() FnCode
 }
 
-// Req is a modbus response. This interface is
-// implemented by all the ResXXX types (structures).
+// Req is a modbus response. This interface is implemented by all the
+// ResXXX and ReqResXXX types (structures).
 type Res interface {
 	fmbRes() // Dummy. Flag type as modbus response
 	Pack([]byte) ([]byte, error)
