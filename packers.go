@@ -174,9 +174,10 @@ func (r *ResRdInputs) Unpack(b []byte) ([]byte, error) {
 		return b, errUnpack
 	}
 	n := b[1]
-	if n < 0 || n > 250 {
+	if n < 1 || n > 250 {
 		return b, errUnpack
 	}
+	r.BitStat = r.BitStat[0:0]
 	r.BitStat = append(r.BitStat, b[2:2+n]...)
 	return b[2+n:], nil
 }
@@ -200,11 +201,32 @@ func (r *ReqRdRegs) FnCode() FnCode {
 }
 
 func (r *ReqRdRegs) Pack(b []byte) ([]byte, error) {
-	return b, errPack
+	if r.Num < 1 || r.Num > 125 {
+		return b, errPack
+	}
+	if r.Holding {
+		b = append(b, byte(RdHoldingRegs))
+	} else {
+		b = append(b, byte(RdInputRegs))
+	}
+	b = pU16s(b, r.Addr, r.Num)
+	return b, nil
 }
 
 func (r *ReqRdRegs) Unpack(b []byte) ([]byte, error) {
-	return b, errUnpack
+	if len(b) < 5 {
+		return b, errUnpack
+	}
+	switch FnCode(b[0]) {
+	case RdHoldingRegs:
+		r.Holding = true
+	case RdInputRegs:
+		r.Holding = false
+	default:
+		return b, errUnpack
+	}
+	b = uU16s(b[1:], &r.Addr, &r.Num)
+	return b, nil
 }
 
 // ResRdRegs is the read-holding-registers (if .Holding == True) or
@@ -225,11 +247,47 @@ func (r *ResRdRegs) FnCode() FnCode {
 }
 
 func (r *ResRdRegs) Pack(b []byte) ([]byte, error) {
-	return b, errPack
+	n := len(r.Val)
+	if l < 1 || l > 125 {
+		return b, errPack
+	}
+	if r.Holding {
+		b = append(b, byte(RdHoldingRegs))
+	} else {
+		b = append(b, byte(RdInputRegs))
+	}
+	b = append(b, byte(n*2))
+	b = pU16s(b, r.Val...)
+	return b
 }
 
 func (r *ResRdRegs) Unpack(b []byte) ([]byte, error) {
-	return b, errUnpack
+	if len(b) < 3 {
+		return b, errUnpack
+	}
+	switch FnCode(b[0]) {
+	case RdHoldingRegs:
+		r.Holding = true
+	case RdInputRegs:
+		r.Holding = false
+	default:
+		return b, errUnpack
+	}
+	n := b[1]
+	if n < 2 || n > 250 || n&1 != 0 {
+		return b, errUnpack
+	}
+	b1 := b[2:]
+	if len(b1) < n {
+		return b, errUnpack
+	}
+	r.Val = r.Val[0:0]
+	for i := 0; i < n; i += 2 {
+		var reg uint16
+		b1 = uU16s(b1, &reg)
+		r.Val = append(r.Val, reg)
+	}
+	return b1, nil
 }
 
 // ReqResWrReg is the write-single-register request and response. See
@@ -243,15 +301,21 @@ type ReqResWrReg struct {
 func (r *ReqResWrReg) FnCode() FnCode { return WrReg }
 
 func (r *ReqResWrReg) Pack(b []byte) ([]byte, error) {
-	return b, errPack
+	b = append(b, WrReg)
+	b = pU16s(b, r.Addr, r.Val)
+	return b, nil
 }
 
 func (r *ReqResWrReg) Unpack(b []byte) ([]byte, error) {
-	return b, errUnpack
+	if b[0] != WrReg {
+		return b, errUnpack
+	}
+	b = uU16s(b[1:], &r.Addr, &r.Val)
+	return b
 }
 
 // ReqResWrCoil is the write-single-coil request and response. See
-// [1],§6.6,pg.17
+// [1],§6.5,pg.17
 type ReqResWrCoil struct {
 	mbReqRes
 	Addr   uint16
@@ -261,9 +325,28 @@ type ReqResWrCoil struct {
 func (r *ReqResWrCoil) FnCode() FnCode { return WrCoil }
 
 func (r *ReqResWrCoil) Pack(b []byte) ([]byte, error) {
-	return b, errPack
+	var val uint16
+	if r.Status {
+		val = 0xff00
+	}
+	b = append(b, WrCoil)
+	b = pU16s(b, r.Addr, val)
+	return b, nil
 }
 
 func (r *ReqResWrCoil) Unpack(b []byte) ([]byte, error) {
-	return b, errUnpack
+	if b[0] != WrCoil {
+		return b, errUnpack
+	}
+	var val uint16
+	b1 := uU16s(b[1:], &r.Addr, &val)
+	switch val {
+	case 0xff00:
+		r.Status = true
+	case 0x0000:
+		r.Status = false
+	default:
+		return b, errUnpack
+	}
+	return b1, nil
 }
