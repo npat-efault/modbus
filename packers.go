@@ -24,32 +24,6 @@ func uU16s(b []byte, ps ...*uint16) []byte {
 	return b
 }
 
-/* Dummy types and methods to be embedded in other types and "flag"
-   them as modbus requests or responses.  A type that has an
-   fmbReqRes() method is either a request or a response.  A type that
-   has an fmbReq() is a request.  A type that has an fmbRes() is a
-   response. See the ReqRes, Req, and Res interfaces, and all the
-   [Req][Res]XXX types that implement them. */
-
-// modbus request
-type mbReq struct{}
-
-func (r *mbReq) fmbReqRes() {}
-func (r *mbReq) fmbReq()    {}
-
-// modbus response
-type mbRes struct{}
-
-func (r *mbRes) fmbReqRes() {}
-func (r *mbRes) fmbRes()    {}
-
-// modubs request and respnse
-type mbReqRes struct{}
-
-func (r *mbReqRes) fmbReqRes() {}
-func (r *mbReqRes) fmbReq()    {}
-func (r *mbReqRes) fmbRes()    {}
-
 // ResExc is the exception (error) response. Used by slaves to reply
 // to bad requests. See [1],§7,pg.48. ResExc implements the error
 // interface (it can be returned as an error).
@@ -143,19 +117,20 @@ func (r *ResRdInputs) FnCode() FnCode {
 	}
 }
 
+// Status returns the status of coil n (zero-based)
 func (r ResRdInputs) Status(n int) bool {
 	return r.BitStat[n>>3]&(1<<(uint(n)&7)) != 0
 }
 
 func (r *ResRdInputs) Pack(b []byte) ([]byte, error) {
-	n := uint8(len(r.BitStat))
+	n := len(r.BitStat)
 	if n < 1 || n > 250 {
 		return b, errPack
 	}
 	if r.Coils {
-		b = append(b, byte(RdCoils), n)
+		b = append(b, byte(RdCoils), byte(n))
 	} else {
-		b = append(b, byte(RdInputs), n)
+		b = append(b, byte(RdInputs), byte(n))
 	}
 	b = append(b, r.BitStat...)
 	return b, nil
@@ -248,7 +223,7 @@ func (r *ResRdRegs) FnCode() FnCode {
 
 func (r *ResRdRegs) Pack(b []byte) ([]byte, error) {
 	n := len(r.Val)
-	if l < 1 || l > 125 {
+	if n < 1 || n > 125 {
 		return b, errPack
 	}
 	if r.Holding {
@@ -258,7 +233,7 @@ func (r *ResRdRegs) Pack(b []byte) ([]byte, error) {
 	}
 	b = append(b, byte(n*2))
 	b = pU16s(b, r.Val...)
-	return b
+	return b, nil
 }
 
 func (r *ResRdRegs) Unpack(b []byte) ([]byte, error) {
@@ -273,7 +248,7 @@ func (r *ResRdRegs) Unpack(b []byte) ([]byte, error) {
 	default:
 		return b, errUnpack
 	}
-	n := b[1]
+	n := int(b[1])
 	if n < 2 || n > 250 || n&1 != 0 {
 		return b, errUnpack
 	}
@@ -301,17 +276,17 @@ type ReqResWrReg struct {
 func (r *ReqResWrReg) FnCode() FnCode { return WrReg }
 
 func (r *ReqResWrReg) Pack(b []byte) ([]byte, error) {
-	b = append(b, WrReg)
+	b = append(b, byte(WrReg))
 	b = pU16s(b, r.Addr, r.Val)
 	return b, nil
 }
 
 func (r *ReqResWrReg) Unpack(b []byte) ([]byte, error) {
-	if b[0] != WrReg {
+	if b[0] != byte(WrReg) {
 		return b, errUnpack
 	}
 	b = uU16s(b[1:], &r.Addr, &r.Val)
-	return b
+	return b, nil
 }
 
 // ReqResWrCoil is the write-single-coil request and response. See
@@ -329,13 +304,13 @@ func (r *ReqResWrCoil) Pack(b []byte) ([]byte, error) {
 	if r.Status {
 		val = 0xff00
 	}
-	b = append(b, WrCoil)
+	b = append(b, byte(WrCoil))
 	b = pU16s(b, r.Addr, val)
 	return b, nil
 }
 
 func (r *ReqResWrCoil) Unpack(b []byte) ([]byte, error) {
-	if b[0] != WrCoil {
+	if b[0] != byte(WrCoil) {
 		return b, errUnpack
 	}
 	var val uint16
@@ -349,4 +324,78 @@ func (r *ReqResWrCoil) Unpack(b []byte) ([]byte, error) {
 		return b, errUnpack
 	}
 	return b1, nil
+}
+
+// ReqWrCoils is the write-multiple-coils request. See
+// [1],§6.11,pg.29
+type ReqWrCoils struct {
+	mbReq
+	Addr    uint16
+	Num     uint16
+	BitStat []byte
+}
+
+func (r *ReqWrCoils) FnCode() FnCode { return WrCoils }
+
+func (r *ReqWrCoils) Pack(b []byte) ([]byte, error) {
+	//n := len(r.BitStat)
+	return b, nil
+}
+
+func (r *ReqWrCoils) Unpack(b []byte) ([]byte, error) {
+	return b, nil
+}
+
+// ResWrCoils is the write-multiple-coils response. See
+// [1],§6.11,pg.29
+type ResWrCoils struct {
+	mbRes
+	Addr uint16
+	Num  uint16
+}
+
+func (r *ResWrCoils) FnCode() FnCode { return WrCoils }
+
+func (r *ResWrCoils) Pack(b []byte) ([]byte, error) {
+	return b, nil
+}
+
+func (r *ResWrCoils) Unpack(b []byte) ([]byte, error) {
+	return b, nil
+}
+
+// ReqWrRegs is the write-multiple-registers request. See
+// [1],§6.12,pg.30
+type ReqWrRegs struct {
+	mbReq
+	Addr uint16
+	Val  []byte
+}
+
+func (r *ReqWrRegs) FnCode() FnCode { return WrRegs }
+
+func (r *ReqWrRegs) Pack(b []byte) ([]byte, error) {
+	return b, nil
+}
+
+func (r *ReqWrRegs) Unpack(b []byte) ([]byte, error) {
+	return b, nil
+}
+
+// ResWrRegs is the write-multiple-registers response. See
+// [1],§6.12,pg.30
+type ResWrRegs struct {
+	mbRes
+	Addr uint16
+	Num  uint16
+}
+
+func (r *ResWrRegs) FnCode() FnCode { return WrRegs }
+
+func (r *ResWrRegs) Pack(b []byte) ([]byte, error) {
+	return b, nil
+}
+
+func (r *ResWrRegs) Unpack(b []byte) ([]byte, error) {
+	return b, nil
 }

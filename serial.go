@@ -18,12 +18,12 @@ func (a SerADU) ExCode() ExCode { return ExCode(a[SerHeadSz+1]) }
 
 func (a SerADU) FnCode() FnCode { return FnCode(a[SerHeadSz+0] & ^ExcFlag) }
 
-func (a SerADU) PDU() PDU { return PDU(a[SerHeadSz:]) }
+func (a SerADU) PDU() PDU { return PDU(a[SerHeadSz : len(a)-2]) }
 
 // CRC returns the CRC stored in the serial ADU
 func (a SerADU) CRC() uint16 {
 	l := len(a)
-	return uint16(a[l-1])<<8 | uint16(a[l-2])
+	return uint16(a[l-2]) | uint16(a[l-1])<<8
 }
 
 // CheckCRC checks if the CRC stored in the serial ADU corresponds to
@@ -39,20 +39,19 @@ func (a SerADU) CheckCRC() bool {
 // modbus serial ADU.
 func SerAddCRC(b []byte) SerADU {
 	crc := crc16.Checksum(crc16.Modbus, b)
-	b = append(b, byte(crc>>8), byte(crc))
-	return SerADU(b)
+	b = append(b, byte(crc), byte(crc>>8))
+	return b
 }
 
 // SerPack packs (marshals) a modbus serial request or response ADU
 // and appends it to slice "b". It is ok if "b" is nil. Returns the
-// appended-to slice, or error. On error "b" is returned unaffected.
+// appended-to slice as SerADU, or error. On error "b" is returned
+// unaffected.
 func SerPack(b []byte, node uint8, rr ReqRes) (SerADU, error) {
 	b1 := append(b, node)
 	b1, err := rr.Pack(b1)
 	if err != nil {
 		return b, err
 	}
-	var a SerADU
-	a = SerAddCRC(b1)
-	return a, nil
+	return SerAddCRC(b1), nil
 }

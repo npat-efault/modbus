@@ -7,12 +7,11 @@
 
 package modbus
 
-import "errors"
-
 // Modbus ADU and PDU sizes (bytes)
 const (
 	MaxADU    = 260
 	MaxSerADU = 256
+	MinSerADU = 4
 	MaxTcpADU = 260
 	MaxPDU    = 253
 	SerHeadSz = 1
@@ -47,7 +46,7 @@ const (
 	Diag          FnCode = 0x08
 	GetComCnt     FnCode = 0x0b
 	GetComLog     FnCode = 0x0c
-	SrvId         FnCode = 0x11
+	SlaveId       FnCode = 0x11
 	RdDevId       FnCode = 0x2b
 )
 
@@ -67,19 +66,49 @@ const (
 	GwRespFail ExCode = 0x0b
 )
 
-var (
-	errFnCode  = errors.New("Invalid function code")
-	errPack    = errors.New("Packing error")
-	errUnpack  = errors.New("Unpacking error")
-	errFnUnsup = errors.New("Function code unsuported")
-)
+/* Dummy types and methods to be embedded in other types and "flag"
+   them as modbus requests or responses.  A type that has an
+   fmbReqRes() method is either a request or a response.  A type that
+   has an fmbReq() is a request.  A type that has an fmbRes() is a
+   response. See the ReqRes, Req, and Res interfaces, and all the
+   [Req][Res]XXX types that implement them. */
+
+// modbus request
+type mbReq struct{}
+
+func (r *mbReq) fmbReqRes() {}
+func (r *mbReq) fmbReq()    {}
+
+// modbus response
+type mbRes struct{}
+
+func (r *mbRes) fmbReqRes() {}
+func (r *mbRes) fmbRes()    {}
+
+// modubs request and respnse
+type mbReqRes struct{}
+
+func (r *mbReqRes) fmbReqRes() {}
+func (r *mbReqRes) fmbReq()    {}
+func (r *mbReqRes) fmbRes()    {}
 
 // ReqRes is a modbus request, or a modbus response. This interface is
 // implemented by all the [Req|Res|ReqRes]XXX types (structures).
 type ReqRes interface {
 	fmbReqRes() // Dummy. Flag type as modbus request-or-response
-	Pack([]byte) ([]byte, error)
-	Unpack([]byte) ([]byte, error)
+
+	// Pack packs (marshals) the request/response and appends it
+	// at byte-slice b. It is ok for b to be nil. Returns the
+	// appended-to byte-slice, or error. On error, b is returned
+	// unaffected.
+	Pack(b []byte) ([]byte, error)
+
+	// Unpack unpacks (unmarshals) the request/response from
+	// byte-slice b. Returns b advanced after the last byte
+	// unpacked, or error. On error, b is returned unaffected.
+	Unpack(b []byte) ([]byte, error)
+
+	// FnCode returns the request's/response's function code
 	FnCode() FnCode
 }
 
@@ -87,24 +116,20 @@ type ReqRes interface {
 // ReqXXX and ReqResXXX types (structures).
 type Req interface {
 	fmbReq() // Dummy. Flag type as modbus request
-	Pack([]byte) ([]byte, error)
-	Unpack([]byte) ([]byte, error)
-	FnCode() FnCode
+	ReqRes
 }
 
 // Req is a modbus response. This interface is implemented by all the
 // ResXXX and ReqResXXX types (structures).
 type Res interface {
 	fmbRes() // Dummy. Flag type as modbus response
-	Pack([]byte) ([]byte, error)
-	Unpack([]byte) ([]byte, error)
-	FnCode() FnCode
+	ReqRes
 }
 
 // NewReq returns a Req (request) interface-value with a concrete type
 // corresponding to the given ModBus function code (i.e. a pointer to
 // the appropriate ReqXXX structure). If an invalid (or unsupported)
-// function-code is given, it returns nil and an error.
+// function-code is given, it returns nil and error.
 func NewReq(f FnCode) (Req, error) {
 	switch f {
 	case RdInputs:
@@ -131,18 +156,23 @@ func NewReq(f FnCode) (Req, error) {
 		return nil, errFnUnsup
 	case RdExcStatus, Diag, GetComCnt, GetComLog:
 		return nil, errFnUnsup
-	case SrvId, RdDevId:
+	case SlaveId, RdDevId:
 		return nil, errFnUnsup
 	default:
 		return nil, errFnCode
 	}
 }
 
-// NewRes returns a Res (respoonse) interface-value with a concrete
+// NewRes returns a Res (response) interface-value with a concrete
 // type corresponding to the given ModBus function code (i.e. a
 // pointer to the appropriate ResXXX structure). If an invalid (or
 // unsupported) function-code is given, it returns nil and an error.
 func NewRes(f FnCode) (Res, error) {
+	// Exception response
+	if byte(f)&ExcFlag != 0 {
+		return &ResExc{}, nil
+	}
+	// Other responses
 	switch f {
 	case RdInputs:
 		return &ResRdInputs{Coils: false}, nil
@@ -168,7 +198,7 @@ func NewRes(f FnCode) (Res, error) {
 		return nil, errFnUnsup
 	case RdExcStatus, Diag, GetComCnt, GetComLog:
 		return nil, errFnUnsup
-	case SrvId, RdDevId:
+	case SlaveId, RdDevId:
 		return nil, errFnUnsup
 	default:
 		return nil, errFnCode

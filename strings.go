@@ -7,7 +7,7 @@ import "fmt"
 const (
 	_FnCode_name_0 = "RdCoilsRdInputsRdHoldingRegsRdInputRegsWrCoilWrRegRdExcStatusDiag"
 	_FnCode_name_1 = "GetComCntGetComLog"
-	_FnCode_name_2 = "WrCoilsWrRegsSrvId"
+	_FnCode_name_2 = "WrCoilsWrRegsSlaveId"
 	_FnCode_name_3 = "RdFileRecWrFileRecMskWrRegRdWrRegsRdFIFO"
 	_FnCode_name_4 = "RdDevId"
 )
@@ -15,7 +15,7 @@ const (
 var (
 	_FnCode_index_0 = [...]uint8{0, 7, 15, 28, 39, 45, 50, 61, 65}
 	_FnCode_index_1 = [...]uint8{0, 9, 18}
-	_FnCode_index_2 = [...]uint8{0, 7, 13, 18}
+	_FnCode_index_2 = [...]uint8{0, 7, 13, 20}
 	_FnCode_index_3 = [...]uint8{0, 9, 18, 26, 34, 40}
 	_FnCode_index_4 = [...]uint8{0, 7}
 )
