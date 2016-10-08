@@ -20,7 +20,9 @@ func TestResFrameSz(t *testing.T) {
 			t.Fatalf("Failed CRC %T!", tst.r)
 		}
 		for i := 0; i < len(a); i++ {
-			length, ok := serResFrameSz(a[:i])
+			var length int
+			var ok bool
+			//length, ok := serResFrameSz(a[:i])
 			if ok {
 				if length != len(a) {
 					t.Fatalf("Bad len for %T: %d != %d",

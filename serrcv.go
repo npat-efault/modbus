@@ -13,11 +13,20 @@ import (
 
 // ModBus over serial default timing parameters
 const (
-	DflSerMstTimeout  = 100 * time.Millisecond
+	// Conservative default values
+
+	// For masters
+	DflSerMstTimeout      = 150 * time.Millisecond
+	DflSerMstFrameTimeout = 60 * time.Millisecond
+	DflSerMstSyncDelay    = DflSerMstFrameTimeout
+	// For slaves
+	DflSerSlvTimeout      = 100 * time.Millisecond
+	DflSerSlvFrameTimeout = 40 * time.Millisecond
+	DflSerSlvSyncDelay    = DflSerSlvTimeout
+
+	// Common
 	DflSerDelay       = 10 * time.Millisecond
-	DflSerSyncDelay   = 50 * time.Millisecond
-	DflSerSyncWaitMax = 5 * time.Second
-	DflSerBaudrate    = 9600
+	DflSerSyncWaitMax = 10 * time.Second
 	minTimeout        = 50 * time.Millisecond
 )
 
@@ -44,340 +53,231 @@ type DeadlineWriter interface {
 	SetWriteDeadline(t time.Time) error
 }
 
-func isTimeout(e error) bool {
-	type tmoError interface {
-		Timeout() bool
-	}
-	if et, ok := e.(tmoError); ok {
-		return et.Timeout()
-	}
-	return false
+// sizer calculates the size of modbus-serial ADUs
+type sizer interface {
+	// size returns the remaining bytes for the patially received
+	// frame in b. If the frame-size cannot be determined
+	// (unsupported function code), it returns 0, false
+	size(b []byte) (remain int, ok bool)
 }
 
-// serBusTime calculates the time it takes to transmit n bytes, at the
-// given bitrate. The time calculated is multipled by the factor, and
-// an appropriate deadline is returned.
-func serBusTime(baudrate int, n int, factor float64) time.Time {
-	t := uint64(n) * 10 * uint64(1000000) / uint64(baudrate)
-	d := time.Duration(float64(t) * factor)
-	if d < minTimeout {
-		d = minTimeout
-	}
-	return time.Now().Add(d)
+// resSizer is a sizer for RESPONSE ADUs
+type resSizer struct {
+	sz int
 }
 
-// serResFrameSz returns the size (in bytes) of the modbus-serial
-// response frame (ADU), given the initial part of a partially read
-// frame (in byte-slice b). If the frame-size cannot be determined yet
-// (the initial part is not enough), SerResFrameSz returns 0,
-// false. This function is a kludge used by masters on systems that
-// cannot detect frame-boundaries using silent intervals. See
-// [2],§2.5.1.1,pg.13
-func serResFrameSz(b []byte) (length int, ok bool) {
-	if len(b) < 3 {
-		return 0, false
+func (s *resSizer) size(b []byte) (remain int, ok bool) {
+	if s.sz != 0 {
+		return s.sz - len(b), true
+	}
+	if len(b) < 5 {
+		return 5 - len(b), true
 	}
 	if b[1]&ExcFlag != 0 {
-		return 3 + SerCRCSz, true
+		s.sz = 3 + SerCRCSz
+		return s.sz - len(b), true
 	}
 	switch FnCode(b[1]) {
 	case RdCoils, RdInputs, RdHoldingRegs, RdInputRegs, RdWrRegs,
 		RdFileRec, WrFileRec, GetComLog, SlaveId:
-		return int(b[2]) + 3 + SerCRCSz, true
+		s.sz = int(b[2]) + 3 + SerCRCSz
+		return s.sz - len(b), true
 	case WrCoil, WrReg, WrCoils, WrRegs, GetComCnt:
-		return 6 + SerCRCSz, true
+		s.sz = 6 + SerCRCSz
+		return s.sz - len(b), true
 	case MskWrReg:
-		return 8 + SerCRCSz, true
+		s.sz = 8 + SerCRCSz
+		return s.sz - len(b), true
 	case RdExcStatus:
-		return 3 + SerCRCSz, true
+		s.sz = 3 + SerCRCSz
+		return s.sz - len(b), true
 	case RdFIFO:
-		if len(b) < 4 {
-			return 0, false
-		}
-		return (int(b[2])<<8 | int(b[3])) + 3 + SerCRCSz, true
+		s.sz = (int(b[2])<<8 | int(b[3])) + 3 + SerCRCSz
+		return s.sz - len(b), true
 	default:
-		if SerADU(b).CheckCRC() {
-			return len(b), true
-		}
 		return 0, false
 	}
 }
 
-// TODO(npat): These cons a req or resp for every frame, and
-// immediatelly drop it.
-
-func trySerUnpackReq(a SerADU) bool {
-	r, err := NewReq(a.FnCode())
-	if err != nil {
-		if err == errFnUnsup {
-			return true
-		}
-		return false
-	}
-	x, err := r.Unpack(a.PDU())
-	if err != nil || len(x) != 0 {
-		return false
-	}
-	return true
+// reqSizer is a sizer for REQUEST ADUs
+type reqSizer struct {
+	sz int
 }
 
-func trySerUnpackRes(a SerADU) bool {
-	r, err := NewRes(a.FnCode())
-	if err != nil {
-		if err == errFnUnsup {
-			return true
+func (s *reqSizer) size(b []byte) (remain int, ok bool) {
+	if s.sz != 0 {
+		return s.sz - len(b), true
+	}
+	if len(b) < 2 {
+		return 2 - len(b), true
+	}
+	switch FnCode(b[1]) {
+	case RdCoils, RdInputs, RdHoldingRegs, RdInputRegs, WrCoil, WrReg:
+		s.sz = 6 + SerCRCSz
+		return s.sz - len(b), true
+	case RdExcStatus, GetComCnt, GetComLog, SlaveId:
+		s.sz = 2 + SerCRCSz
+		return s.sz - len(b), true
+	case WrCoils, WrRegs:
+		if len(b) < 7 {
+			return 7 - len(b), true
 		}
-		return false
+		s.sz = int(b[6]) + 7 + SerCRCSz
+		return s.sz - len(b), true
+	case RdFileRec, WrFileRec:
+		if len(b) < 3 {
+			return 3 - len(b), true
+		}
+		s.sz = int(b[2]) + 3 + SerCRCSz
+		return s.sz - len(b), true
+	case MskWrReg:
+		s.sz = 8 + SerCRCSz
+		return s.sz - len(b), true
+	case RdWrRegs:
+		if len(b) < 10 {
+			return 10 - len(b), true
+		}
+		s.sz = int(b[10]) + 11 + SerCRCSz
+		return s.sz - len(b), true
+	case RdFIFO:
+		s.sz = 4 + SerCRCSz
+		return s.sz - len(b), true
+	case RdDevId:
+		s.sz = 5 + SerCRCSz
+		return s.sz - len(b), true
+	default:
+		return 0, false
 	}
-	x, err := r.Unpack(a.PDU())
-	if err != nil || len(x) != 0 {
-		return false
-	}
-	return true
 }
 
 // SerReceiver is a frame receiver for modbus-over-serial frames
 // (ADUs). There are two implementations: One for RTU-encoded ADUs,
 // and one for ASCII-encoded ADUs.
 type SerReceiver interface {
-	// Receive reads (receives) a serial frame (ADU). It appends
-	// the ADU at byte-slice b. It is ok for b to be nil. Pass a
-	// non-nil b if you want to use pre-allocated space. Returns
-	// the appended-to byte-slice as a SerADU. On error it returns
-	// b unaffected, along with the error.
+	// ReceiveReq and ReceiveRes read (receive) response or
+	// request serial frames (ADU). They appends the ADU at
+	// byte-slice b. It is ok for b to be nil. Pass a non-nil b if
+	// you want to use pre-allocated space. The first byte of the
+	// frame must be received before the given deadline
+	// expires. Returns the appended-to byte-slice as a SerADU. On
+	// error it returns b unaffected, along with the error.
 	//
 	// The error returned can be one of the following: ErrFrame
 	// (cannot receive frame), ErrCRC (bad frame CRC), ErrTimeout
-	// (frame reception timed-out), ErrSync (cannot re-synchronize
-	// after frame reception failure), or any I/O error returned
-	// by the DeadlineReader, wrapped in ErrIO. Of these, only the
-	// ErrIO-wrapped errors (and *possibly* ErrSync) can be
-	// considered fatal.
+	// (frame reception timed-out), or any I/O error returned
+	// by the DeadlineReader, wrapped in ErrIO.
 	//
 	// See specific implementations for more details.
-	Receive(b []byte) (SerADU, error)
+	ReceiveReq(b []byte, deadline time.Time) (SerADU, error)
+	ReceiveRes(b []byte, deadline time.Time) (SerADU, error)
 
-	// Sync can be used to syncronize the master or slave to the
-	// serial bus. Sync returns nil (succesfully synced), ErrSync
-	// (failed to sync), or any error returned by the
+	// Sync must be called to syncronize the master or slave to
+	// the serial bus. Sync returns nil (succesfully synced),
+	// ErrSync (failed to sync), or any error returned by the
 	// DeadlineReader wrapped in ErrIO. See specific
 	// implementation for more details.
 	Sync() error
 }
 
 // SerReceiverRTU is the SerFrameReceiver implementation for
-// RTU-encoded ADUs. It operates it two modes master, and slave.
+// RTU-encoded ADUs.
 //
-// In master mode the receiver reads (receives) only RESPONSE frames
-// (ADUs). In slave mode it receives both request and response frames
-// (assuming the slave is connected to a half-duplex, multi-drop bus).
+// Note for calculating correct and efficient timing parameters.
+//
 type SerReceiverRTU struct {
-	master bool
-	r      DeadlineReader
-	br     *bufio.Reader
-
-	// You can change these parameters between calls.
-	//
-	// Serial bus bitrate. Used for timeout calculations.
-	Baudrate int
-	// In master mode: Timeout until the reception of the first
-	// response ADU byte, counting from when Receive was
-	// called. In slave mode: Timeout for the reception of a
-	// complete frame, counting from the reception of the first
-	// byte. In slave mode, autocalculated if zero.
-	Timeout time.Duration
+	r DeadlineReader
+	// FrameTimeout is the intra-frame timeout. It is started when
+	// the first frame byte is received and refreshed whith the
+	// reception of any subsequent frame-bytes.
+	FrameTimeout time.Duration
 	// Duration the line should remain idle in order to consider
-	// the receiver re-synchronized. Applies only when the
-	// receiver has detected a frame error or bad frame.
+	// the receiver re-synchronized.
 	SyncDelay time.Duration
 	// Maximum time to wait for re-synchronization, before
 	// giving-up and returning ErrSync.
 	SyncWaitMax time.Duration
 }
 
-// NewSerReceiverRTU returns a new master or slave receiver for
-// RTU-encoded ADUs.
-func NewSerReceiverRTU(master bool, r DeadlineReader) *SerReceiverRTU {
-	rcv := &SerReceiverRTU{
-		master:      master,
-		r:           r,
-		Baudrate:    DflSerBaudrate,
-		Timeout:     DflSerMstTimeout,
-		SyncDelay:   DflSerSyncDelay,
-		SyncWaitMax: DflSerSyncWaitMax,
+// NewSerReceiverRTU returns a new receiver for RTU-encoded ADUs.
+func NewSerReceiverRTU(r DeadlineReader) *SerReceiverRTU {
+	return &SerReceiverRTU{
+		r:            r,
+		FrameTimeout: DflSerMstFrameTimeout,
+		SyncDelay:    DflSerMstSyncDelay,
+		SyncWaitMax:  DflSerSyncWaitMax,
 	}
-	if !rcv.master {
-		rcv.Timeout = 0
-		rcv.br = bufio.NewReaderSize(r, MaxSerADU)
-	}
-	return rcv
 }
 
-// Receive receives an ADU. Upon entry the receiver must be
+// ReceiveReq receives a REQUEST ADU. Upon entry the receiver must be
+// synchronized to the start of the request frame. After a successful
+// frame reception, the receiver returns imediately. The caller must
+// make sure that an appropriate delay is observed before transmitting
+// the next response. After a frame reception failure (ErrFrame or
+// ErrCRC), the caller must re-synchronize the receiver by calling the
+// Sync method.
+func (rcv *SerReceiverRTU) ReceiveReq(b []byte,
+	deadline time.Time) (SerADU, error) {
+	return rcv.receive(b, deadline, &reqSizer{})
+}
+
+// ReceiveRes receives a RESPONSE ADU. Upon entry the receiver must be
 // synchronized to the start of the response frame. After a successful
 // frame reception, the receiver returns imediately. The caller must
 // make sure that an appropriate delay is observed before transmitting
-// the next request or response. After a frame reception failure, the
-// receiver is re-synchronized for the next request transmission or
-// frame reception, unless ErrSync (failed to re-synchronize) is
-// returned. See also the docs of the Receive method of the
-// SerReceiver interface.
-func (rcv *SerReceiverRTU) Receive(b []byte) (SerADU, error) {
-	if rcv.master {
-		return rcv.receiveMaster(b)
-	} else {
-		return rcv.receiveSlave(b)
-	}
+// the next request. After a frame reception failure (ErrFrame or
+// ErrCRC), the caller must re-synchronize the receiver by calling the
+// Sync method.
+func (rcv *SerReceiverRTU) ReceiveRes(b []byte,
+	deadline time.Time) (SerADU, error) {
+	return rcv.receive(b, deadline, &resSizer{})
 }
 
-func (rcv *SerReceiverRTU) receiveMaster(b []byte) (SerADU, error) {
+func (rcv *SerReceiverRTU) receive(b []byte,
+	deadline time.Time, sz sizer) (SerADU, error) {
+
 	var buf [MaxSerADU]byte
 	var be = buf[:]
 	var fr = be[0:0]
-	var nr, sz int
-	var ok bool
 
-	// Set receiver deadline. Must be updated when the first byte
-	// is received.
-	rcv.r.SetReadDeadline(time.Now().Add(rcv.Timeout))
-	updatedDeadline := false
-	// Determine frame size (read "head")
-	for !ok {
-		if nr >= MaxSerADU {
-			// Cannot determine frame size,
-			// try to synchronize and abort
-			err := rcv.Sync()
-			if err != nil {
-				return b, err
-			}
+	rcv.r.SetReadDeadline(deadline)
+
+	nrem, _ := sz.size(fr)
+	for {
+		n, err := rcv.r.Read(be[:nrem])
+		be = be[n:]
+		fr = fr[:len(fr)+n]
+		var ok bool
+		nrem, ok = sz.size(fr)
+		if !ok {
+			// Unsuported function code
 			return b, ErrFrame
 		}
-		n, err := rcv.r.Read(be)
-		nr += n
-		fr = fr[:nr]
-		be = be[n:]
-		sz, ok = serResFrameSz(fr)
+		if nrem == 0 {
+			// Full frame received
+			break
+		}
 		if err != nil {
-			if ok && nr >= sz {
-				// Full frame and error.
-				// Return frame, hide error
-				a := SerADU(fr[:sz])
-				if err := rcv.checkADU(a); err != nil {
-					return b, err
-				}
-				b = append(b, a...)
-				return b, nil
-			}
 			if isTimeout(err) {
 				return b, ErrTimeout
 			}
 			return b, wErrIO(err)
 		}
-		// Update the deadline. Assume max frame.
-		if !updatedDeadline {
-			deadline := serBusTime(rcv.Baudrate, MaxSerADU-nr, 1.5)
-			rcv.r.SetReadDeadline(deadline)
-			updatedDeadline = true
-		}
+		rcv.r.SetReadDeadline(time.Now().Add(rcv.FrameTimeout))
 	}
-	// Fix the deadline now that we know the size
-	deadline := serBusTime(rcv.Baudrate, sz-nr, 1.5)
-	rcv.r.SetReadDeadline(deadline)
-	// Read rest
-	for nr < sz {
-		n, err := rcv.r.Read(be)
-		nr += n
-		be = be[n:]
-		if err != nil && nr < sz {
-			// TODO(npat): ErrTimeout here
-			// Error before frame
-			return b, wErrIO(err)
-		}
-	}
-	// Capture frame. Anything past sz is garbage.
-	a := SerADU(fr[:sz])
-	if err := rcv.checkADU(a); err != nil {
-		return b, err
+	a := SerADU(fr)
+	if !a.CheckCRC() {
+		return b, ErrCRC
 	}
 	b = append(b, a...)
 	return b, nil
 }
 
-func (rcv *SerReceiverRTU) receiveSlave(b []byte) (SerADU, error) {
-	var fr = SerADU(b[len(b):len(b)])
-	var check bool
-
-	// Clear initial receiver deadline
-	rcv.r.SetReadDeadline(time.Time{})
-
-	for len(fr) < MaxSerADU && !check {
-		ch, err := rcv.br.ReadByte()
-		if err != nil {
-			if isTimeout(err) {
-				return b, ErrTimeout
-			}
-			return b, wErrIO(err)
-		}
-		if len(fr) == 0 {
-			// Start of possible frame, set receiver deadline
-			var deadline time.Time
-			if rcv.Timeout > 0 {
-				deadline = time.Now().Add(rcv.Timeout)
-			} else {
-				deadline = serBusTime(rcv.Baudrate, MaxSerADU, 1.5)
-			}
-			rcv.r.SetReadDeadline(deadline)
-		}
-		fr = append(fr, ch)
-		if len(fr) < MinSerADU {
-			continue
-		}
-		check = fr.CheckCRC()
-	}
-	if !check {
-		// No frame detected
-		// Clear recption buffer and resync
-		rcv.br.Reset(rcv.r)
-		err := rcv.Sync()
-		if err != nil {
-			return b, err
-		}
-		return b, ErrFrame
-	}
-
-	if !trySerUnpackReq(fr) && !trySerUnpackRes(fr) {
-		// Bad frame, cannot unpack
-		// Clear recption buffer and resync
-		rcv.br.Reset(rcv.r)
-		err := rcv.Sync()
-		if err != nil {
-			return b, err
-		}
-		return b, ErrFrame
-	}
-
-	return append(b, fr...), nil
-}
-
-func (rcv *SerReceiverRTU) checkADU(a SerADU) error {
-	if !a.CheckCRC() {
-		err := rcv.Sync()
-		if err != nil {
-			return err
-		}
-		return ErrCRC
-	}
-	return nil
-}
-
-// Sync synchronizes the slave or master on the bus. Can, optionally,
-// be called before the first request is transmitted (master mode) or
-// before the first frame is received (slave mode). Can also,
-// optionally, be called after Receive returns ErrSync. There is no
-// need to call it between subsequent request or response
-// transmissions or receptions. See also the docs of the Sync method
-// of the SerReceiver interface.
-func (rcv SerReceiverRTU) Sync() error {
+// Sync synchronizes the slave or master on the bus. Must be called
+// before the first request is transmitted (master) or before the
+// first frame is received (slave). Must also be called to
+// resynchronize the master or slave after a frame error (ErrFrame, or
+// ErrCRC).
+func (rcv *SerReceiverRTU) Sync() error {
 	b := make([]byte, 16)
 	tend := time.Now().Add(rcv.SyncWaitMax)
 	for {

@@ -7,14 +7,40 @@ package modbus
 
 import "time"
 
+const (
+	// Minimum auto-calculated timeout
+	SerMinTimeout = 50 * time.Millisecond
+	// Bits per transmitted character
+	SerBitsPerChar = 10
+)
+
+// SerBusTime calculates the time it takes to transmit "n" chars, at
+// the given bitrate. The time calculated is multipled by "factor",
+// and clamped-down by SerMinTimeout. It is returned as a timeout
+// (relative) along with the respective deadline (absolute).
+func SerBusTime(baudrate int, n int, factor float64) (time.Duration, time.Time) {
+	ns := uint64(n) * SerBitsPerChar * uint64(1000000000) / uint64(baudrate)
+	d := time.Duration(float64(ns)*factor) * time.Nanosecond
+	if d < SerMinTimeout {
+		d = SerMinTimeout
+	}
+	return d, time.Now().Add(d)
+}
+
 // SerMaster is a modbus-over-serial master (client). Before using, or
-// after changing any of the fields below, you *must* call the Init
-// method.
+// after changing any of the parameters below, you *must* call the
+// Init method.
 type SerMaster struct {
 	conn DeadlineReadWriter
-	// Response reception timeout (counting from start of the
-	// request transmission)
+	// Serial bus bitrate. Used for timeout calculations
+	Baudrate int
+	// Response timeout. Counting approx. from the *end* of the
+	// request transmission, until the reception of the first
+	// response byte (not dependent on baudrate)
 	Timeout time.Duration
+	// Frame timeout. Maximum time allowed for nothing to be
+	// received, while the reception of a response has started.
+	FrameTimeout time.Duration
 	// Delay between the reception of a response and the
 	// transmission of the next request.
 	Delay time.Duration
@@ -22,8 +48,9 @@ type SerMaster struct {
 	// received.
 	Retrans int
 	// Time the bus has to remain idle before the master is
-	// considered synchronized. Applies only after the receiver
-	// detects a frame error or a bad frame.
+	// considered synchronized. The master synchronizes on the
+	// first call and after it detects a frame error or a bad
+	// frame.
 	SyncDelay time.Duration
 	// Time to wait to (re-)synchronize before giving up.
 	SyncWaitMax time.Duration
@@ -32,6 +59,7 @@ type SerMaster struct {
 
 	rcv      SerReceiver
 	timeLast time.Time
+	synced   bool
 }
 
 // Init must be called before using the master, and after changing any
@@ -39,14 +67,21 @@ type SerMaster struct {
 func (sm *SerMaster) Init(conn DeadlineReadWriter) {
 	sm.conn = conn
 	// Fixup params
+	if sm.Baudrate <= 0 {
+		sm.Baudrate = 9600
+	}
 	if sm.Timeout <= 0 {
 		sm.Timeout = DflSerMstTimeout
+	}
+	if sm.FrameTimeout <= 0 {
+		// Calc from baudrate ??
+		sm.FrameTimeout = DflSerMstFrameTimeout
 	}
 	if sm.Delay <= 0 {
 		sm.Delay = DflSerDelay
 	}
 	if sm.SyncDelay <= 0 {
-		sm.SyncDelay = DflSerSyncDelay
+		sm.SyncDelay = DflSerMstSyncDelay
 	}
 	if sm.SyncWaitMax <= 0 {
 		sm.SyncWaitMax = DflSerSyncWaitMax
@@ -55,12 +90,13 @@ func (sm *SerMaster) Init(conn DeadlineReadWriter) {
 		// sc.rcv = &SerReceiverASCII{r: sc.Conn}
 	} else {
 		// Create and configure receiver
-		rcv := NewSerReceiverRTU(true, sm.conn)
-		rcv.Timeout = sm.Timeout
+		rcv := NewSerReceiverRTU(sm.conn)
+		// Don't set timeout, we use rcv.Deadline instead
+		// rcv.Timeout = sm.Timeout
+		rcv.FrameTimeout = sm.FrameTimeout
 		rcv.SyncDelay = sm.SyncDelay
 		rcv.SyncWaitMax = sm.SyncWaitMax
 		sm.rcv = rcv
-
 	}
 }
 
@@ -69,35 +105,42 @@ func (sm *SerMaster) Init(conn DeadlineReadWriter) {
 // nil. Pass a non-nil b if you want to use pre-allocated space for
 // the response. Returns the appended-to byte-slice as a SerADU. On
 // error it returns b unaffected, along with the error. Exception
-// responses by the server (slave) are not considered errors.
+// responses by the slave are not considered errors.
 //
-// Errors returned by SndRcv are: ErrComm (cannot receive response),
-// or any error returned by the DeadlineReadWriter, wrapped in ErrIO.
+// Errors returned by SndRcv are: ErrFrame (cannot receive response
+// frame), ErrCRC (bad response frame CRC), ErrTimeout (response
+// reception timeout), ErrSync (failed to sync to the bus), and any
+// I/O error returned by the DeadlineReadWriter, wrapped in ErrIO. Of
+// these ErrIO, and possibly ErrSync should be considered fatal.
 func (sm *SerMaster) SndRcv(req SerADU, b []byte) (SerADU, error) {
-	// Observe delay
-	if !sm.Ascii {
-		dt := time.Now().Sub(sm.timeLast)
-		if dt < sm.Delay {
-			time.Sleep(sm.Delay - dt)
+	if sm.synced {
+		// Observe delay
+		if !sm.Ascii {
+			dt := time.Now().Sub(sm.timeLast)
+			if dt < sm.Delay {
+				time.Sleep(sm.Delay - dt)
+			}
 		}
 	}
 	var err error
-	var try int
-	for try = sm.Retrans + 1; try > 0; try-- {
-		deadline := time.Now().Add(sm.Timeout)
-
-		// Transmit request. Put a deadline on transmission
-		// just in case. It should never expire.
-		err = sm.conn.SetWriteDeadline(deadline)
-		if err != nil {
-			err = wErrIO(err)
-			break
+	for try := sm.Retrans + 1; try > 0; try-- {
+		// Sync to bus, if required
+		if !sm.synced {
+			if err = sm.rcv.Sync(); err != nil {
+				break
+			}
+			sm.synced = true
 		}
+		// Transmit request
+		// Calculate request transmission time
+		_, deadline := SerBusTime(sm.Baudrate, len(req), 1.0)
+		sm.conn.SetWriteDeadline(deadline)
 		_, err = sm.conn.Write(req)
 		if err != nil {
 			// Don't retransmit on timeout.
-			// We should not tmo on write.
+			// We should not timeout on write.
 			err = wErrIO(err)
+			break
 		}
 
 		if req.Node() == 0x0 {
@@ -107,25 +150,25 @@ func (sm *SerMaster) SndRcv(req SerADU, b []byte) (SerADU, error) {
 
 		// Receive response
 		var a SerADU
-		a, err = sm.rcv.Receive(b)
+		// Set receiver deadline (take into account the
+		// request transmission time)
+		deadline = deadline.Add(sm.Timeout)
+		a, err = sm.rcv.ReceiveRes(b, deadline)
 		if err != nil {
-			if err == ErrSync {
-				err = ErrComm
-				break
+			if err == ErrFrame || err == ErrCRC {
+				sm.synced = false
+				continue
 			}
 			if _, ok := err.(*ErrIO); ok {
 				break
 			}
-			// Retry
+			// Timeout. Retry.
 			continue
 		}
 		// Response ok
 		b = a
 		sm.timeLast = time.Now()
 		break
-	}
-	if try == 0 {
-		err = ErrComm
 	}
 	return b, err
 }

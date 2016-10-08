@@ -1,0 +1,231 @@
+
+MODBUS Over Serial Line, RTU timing issues
+==========================================
+
+CAVEAT EMPTOR:
+
+   Package modbus does NOT use silent intervals to detect the
+   boundaries of ModBus Over Serial, RTU encoded, frames (messages) as
+   described in the relevant spec. Instead, it parses the frame data
+   on the fly to determine their length. This works very well for RTU
+   masters and imposes no limitations. For RTU slaves, though, this
+   approach has significant issues, does impose limitations, and
+   introduces flakiness that must be carefully
+   controlled. Unfortunately, every other solution would mandate the
+   implementation of special-purpose O/S asynchronous serial
+   device-drivers, something that is well outside the scope of the
+   project.
+
+Read on if you wish to understand the details...
+
+The "MODBUS over Serial Line" spec [1], in section 2.5.1.1 describes
+how, in RTU encoding, frames are delineated and detected using silent
+intervals. While this may have been a reasonable choice in the 70s and
+the 80s, it causes significant (and, frankly, unnecessary)
+complications in modern computing environments. This document explains
+why and the consequences of this.
+
+Modern (and not so modern) UARTs have hardware FIFO queues on their
+receivers. While these FIFOs can be disabled, and have the UART
+operate in "one character at a time" mode, this is not always
+practicable (you would have to write your own or modify the O/S UART
+device driver) or desirable (it could causes high interrupt rates at
+high baudrates, which may be overwhelming, especially if you are using
+multiple ports at the same time).
+
+Assume a 16-chars FIFO (a typical size) configured to interrupt when
+it's 100% full (the "worst case" for our discussion). Also assume a
+bitrate of 9600bps. In this case, when the line is fully driven
+(characters arrive back-to-back) we receive one interrupt every,
+approximately, 17ms. Even with the line at capacity, we will still
+detect "silent" intervals of up to 17ms (or 16 char-times). Since
+modbus RTU encoding uses silent intervals to detect frame boundaries,
+17ms is the lowest delay we have to use between frame transmissions in
+order to be able to reliably determine frames at 9600bps---without
+modifying the serial driver and reducing the FIFO fill level for
+triggering interrupts. Actually, if we want to do the frame detection
+at user-space, we may have to increase this delay *much* more to
+account for the O/S multitasking latency. The ModBus spec suggests
+delays of approx 3.5ms for this baudrate: Totally untenable.
+
+Using silent intervals to delineate frames is the most brain-dead
+decision in an otherwise quite reasonable spec (as these things
+go). An HDLC-like framing (had it been selected) would have cleared
+all this mess. Know you know who to blame for the horror that follows.
+
+Regardless, we can still cope without special-purpose device
+drivers. Quite well for modbus masters, not so well for slaves.
+
+For masters: While we are supposed to detect frames based on silent
+intervals, we do not *have* to. Since modbus is a request-response
+protocol, if the master stops transmitting requests, the slaves will
+stop transmitting responses, and in a short while the line will go
+idle and remain so for as long as the master does not transmit
+anything. So, for the master to sync with the bus, all it has to do is
+stop transmitting requests and wait for the line to go idle for a
+reasonable amount of time. After this, it knows that the first byte
+received will be the first byte of a response frame (after of course
+it transmits a request itself). Responses are formatted in such a way
+that by parsing the first few bytes we can determine their length
+without relying on silent intervals. Assuming no errors on the
+line. If such an error occurs (we can detect it using the frame's CRC,
+and should not be often), the master can re-sync by stopping
+transmitting and waiting for the line to go idle for a reasonable
+amount of time. How much is reasonable?  More than the 16-20ms in the
+example above, or whatever can be reliably determined. It should not
+matter much, as long as errors are not frequent. In effect the master
+has to:
+
+- Synchronize itself by stop transmitting and wait for the line to
+  become idle for a reasonable amount of time.
+
+- Parse response characters at the receiver (as they arrive) in order
+  to determine the response frame's length.
+
+- Make sure that there is a minimal delay between the reception of a
+  response, and the transmission of the next request (which is easy to
+  do). This is to avoid confusing slaves that use silent intervals to
+  detect frame boundaries.
+
+For slaves things are much worse: Even if we somehow manage to sync
+the slave to the beginning of a frame, it is impossible for it to
+determine the length of the frame by parsing the bytes as they
+arrive. It is so because the slave has no way of knowing whether a
+given frame is a response or a request and cannot decide what format
+to expect. Yes, you read correctly: There is no way to tell apart
+requests from responses, not by themselves. The only possible solution
+is this: We somehow manage to sync the slave to the beginning of a
+frame that we know is a request frame. Then, assuming that no unknown
+frames are exchanged between the master and any of the slaves, and no
+errors occur, our slave can keep itself synchronized by receiving and
+parsing all the traffic on the bus.
+
+
+
+
+
+Given the following prerequisites:
+
+1. Once a slave receives a request it will start replying within a
+time T(sr), or not at all.
+
+2. Once a slave has started transmitting a response, if it does not
+transmit a char for T(fr), then it will not transmit any more, until
+it receives a new request. Stated differently: Bytes in a
+slave-response are not transmitted more than T(fr) apart, and a slave
+transmits only a single response to a master request.
+
+3. Once a master has started transmitting a request, and while the
+request has not been fully transmitted, if it does not transmit a byte
+for T(fr), then the next byte on the line will also be from the
+master, and it will start a new request. Stated differently: Bytes in
+a master request are not transmitted more than T(fr) apart, and slaves
+do not reply to partial requests.
+
+Given these you can configure the timeouts, on the master and the
+slave to satisfy the following. If we also assume that T(fr) < T(sr)
+(the usual case) then the requirements in the brackets are always and
+trivially satisfied.
+
+For the master:
+
+- Master timeout (MT):  T(sr) < MT
+- Master frame timeout MT(fr): T(fr) < MT(fr), [and MT(fr) < MT]
+- Master sync delay MSD: T(fr) < MSD
+- Master max sync wait MSW: MSD <<< MSW
+
+For the slave:
+
+- Slave timeout (ST): T(sr) < ST < MT, [and T(fr) < ST]
+- Slave frame timeout ST(fr): T(fr) < ST(fr) < MT(fr)
+- Slave sync delay SSD: T(sr) < SSD < MT, [and T(fr) < ST]
+- Slave max sync wait SSW: SSD <<< SSW
+
+NOTES:
+
+- The master timeout MT: is the time the master will wait for the
+  first byte of a slave response (counting from the transmission of
+  the last request byte), before the master re-transmits the
+  request.
+
+- The master frame timeout MT(fr): Is the time the master will wait
+  between bytes of a response before considering the response partial
+  and re-transmitting the request.
+
+- The master sync delay MSD: Is the length of silence on the bus the
+  master will wait-for in order to consider itself re-synchronized
+  (ready to transmit the next request). The master re-synchronizes
+  itself when it receives a bad frame (frame whose size it cannot
+  determine or frame with a CRC error).
+
+
+- The slave timeout ST: is the time the slave will wait for the response
+  (of anther slave) from the time the last request byte was
+  received. After that time, the slave will consider that the request
+  will not be replied, and switch to waiting for a new request. Again
+  in package modbus this is expressed with the "deadline" argument to
+  the ReceiveRes method.
+
+- The slave frame timeout ST(fr): is the time the slave will wait
+  between bytes of a response before it considers the response partial
+  and switches to listening for a request. Also the time the slave
+  will wait between bytes of a request before it considers the request
+  partial and switches to waiting for a new request.
+
+- The slave sync delay SSD: Is the length of silence on the bus the
+  slave will wait-for in order to consider itself
+  re-synchronized. Synchronized, means reasonably certain that the
+  next byte on the bus will be the start of a request. The slave
+  re-synchronizes itself when it receives a bad frame (frame whose
+  size it cannot determine or frame with a CRC error). This is tricky
+  because the condition can be satisfied only if SSD is POSITIVELY
+  larger than T(sr) (i.e. there *cannot* be a slave response coming)
+  and shorter than MT (otherwise we will never synchronize).
+
+- Be **very** conservative with the Frame Timeouts (master and slave)
+  to account for reception queueing by the hardware, the driver, and
+  the O/S. Being conservative will not degrade performance much, as
+  these timeouts only protect against partial replies which are,
+  anyway, very rare.
+
+EXAMPLE:
+
+We know that our slaves will always start transmitting a reply, no
+latter than 50ms after they receive the request. We also know that our
+slave transmit all response bytes back-to-back, and the same is true
+for the master requests. The bus is operating at 9600bps (roughly
+assume a byte-time of 1ms).
+
+Timeout, master [MT]: 50ms + 16ms x 2 (for request-reception queuing
+delay at the slave and response-reception queuing delay at the master)
+= 82ms. A reasonable setting would be between 100ms - 150ms. Start
+with 200ms to be safe, and tighten-up once you see everything is
+working.
+
+Frame Timeout, master [MT(fr)]: Assuming 16-bytes queuing, more than
+16ms-20ms. Start with 70ms.
+
+Sync Delay, master [MSD]: Same as MT(fr) 
+
+Timeout, slave [ST]: Between 100ms (typically 82ms) and whatever you
+set MT. Start with 130ms.
+
+Frame Timeout, slave [ST(fr)]: Less than MT(fr) but more than
+16ms. Start with 50ms.
+
+Sync Delay, slave [SSD]: Same as ST
+
+Longer timeouts can never cause malfunction. An overly large Master /
+Slave Timeout will cause delays if a slave is powered-down or
+missing. An overly large Master / Slave Frame Timeout will only cause
+delays when a slave is powered-down mid-frame (which is, for every
+practical purpose, rare and insignificant).
+
+Remember that the timeouts you set must be within the timing accuracy
+of your system (including O/S and multitasking delays). Depending on
+your system, do not count to be able to be accurate for anything
+bellow 10ms-20ms. For example when we say that ST < MT, the difference
+must be at least 10ms-20ms.
+
+Timeouts have no effect, performance or otherwise, when the system is
+functioning correctly (no missing slaves).
