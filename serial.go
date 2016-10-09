@@ -35,7 +35,7 @@ func (a SerADU) CheckCRC() bool {
 
 // SerAddCRC appends a ModBus serial CRC16, calculated over the
 // contents of byte-slice b, at the end of b. The CRC is appended
-// most-important byte first. The resulting slice is returned as a
+// less-important byte first. The resulting slice is returned as a
 // modbus serial ADU.
 func SerAddCRC(b []byte) SerADU {
 	crc := crc16.Checksum(crc16.Modbus, b)
@@ -53,5 +53,7 @@ func SerPack(b []byte, node uint8, rr ReqRes) (SerADU, error) {
 	if err != nil {
 		return b, err
 	}
-	return SerAddCRC(b1), nil
+	crc := crc16.Checksum(crc16.Modbus, b1[len(b):])
+	b1 = append(b1, byte(crc), byte(crc>>8))
+	return b1, nil
 }

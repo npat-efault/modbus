@@ -11,15 +11,13 @@ import (
 	"testing"
 )
 
-type P struct {
+var packTestData = []struct {
 	req bool
 	b   []byte
 	r   ReqRes
-}
-
-var packTestData = []P{
+}{
 	// exception response
-	P{
+	{
 		false,
 		[]byte{0x81, 0x01},
 		&ResExc{
@@ -27,7 +25,7 @@ var packTestData = []P{
 			ExCode:   BadFnCode},
 	},
 	// read-coils request
-	P{
+	{
 		true,
 		[]byte{0x01, 0x00, 0x13, 0x00, 0x13},
 		&ReqRdInputs{
@@ -36,7 +34,7 @@ var packTestData = []P{
 			Num:   0x0013},
 	},
 	// read-coils response
-	P{
+	{
 		false,
 		[]byte{0x01, 0x03, 0xcd, 0x6b, 0x05},
 		&ResRdInputs{
@@ -44,7 +42,7 @@ var packTestData = []P{
 			BitStat: []byte{0xcd, 0x6b, 0x05}},
 	},
 	// read-discrete-inputs request
-	P{
+	{
 		true,
 		[]byte{0x02, 0x00, 0xc4, 0x00, 0x16},
 		&ReqRdInputs{
@@ -53,7 +51,7 @@ var packTestData = []P{
 			Num:   0x0016},
 	},
 	// read-discrete-inputs response
-	P{
+	{
 		false,
 		[]byte{0x02, 0x03, 0xac, 0xbd, 0x35},
 		&ResRdInputs{
@@ -61,7 +59,7 @@ var packTestData = []P{
 			BitStat: []byte{0xac, 0xbd, 0x35}},
 	},
 	// read-holding-regs request
-	P{
+	{
 		true,
 		[]byte{0x03, 0x00, 0x6b, 0x00, 0x03},
 		&ReqRdRegs{
@@ -70,7 +68,7 @@ var packTestData = []P{
 			Num:     0x0003},
 	},
 	// read-holding-regs response
-	P{
+	{
 		false,
 		[]byte{0x03, 0x06, 0x02, 0x2b, 0x0, 0x0, 0x0, 0x64},
 		&ResRdRegs{
@@ -78,7 +76,7 @@ var packTestData = []P{
 			Val:     []uint16{0x022b, 0x0000, 0x0064}},
 	},
 	// read-input-regs request
-	P{
+	{
 		true,
 		[]byte{0x04, 0x00, 0x6b, 0x00, 0x03},
 		&ReqRdRegs{
@@ -87,7 +85,7 @@ var packTestData = []P{
 			Num:     0x0003},
 	},
 	// read-input-regs response
-	P{
+	{
 		false,
 		[]byte{0x04, 0x06, 0x02, 0x2b, 0x0, 0x0, 0x0, 0x64},
 		&ResRdRegs{
@@ -96,7 +94,7 @@ var packTestData = []P{
 	},
 
 	// write-single-coil request
-	P{
+	{
 		true,
 		[]byte{0x05, 0x00, 0xac, 0xff, 0x00},
 		&ReqResWrCoil{
@@ -104,7 +102,7 @@ var packTestData = []P{
 			Status: true},
 	},
 	//  write-single-coi response
-	P{
+	{
 		false,
 		[]byte{0x05, 0x00, 0xac, 0xff, 0x00},
 		&ReqResWrCoil{
@@ -112,7 +110,7 @@ var packTestData = []P{
 			Status: true},
 	},
 	// write-single-reg request
-	P{
+	{
 		true,
 		[]byte{0x06, 0x00, 0xac, 0xde, 0xad},
 		&ReqResWrReg{
@@ -120,7 +118,7 @@ var packTestData = []P{
 			Val:  0xdead},
 	},
 	//  write-single-reg response
-	P{
+	{
 		false,
 		[]byte{0x06, 0x00, 0xac, 0xde, 0xad},
 		&ReqResWrReg{
@@ -130,8 +128,11 @@ var packTestData = []P{
 }
 
 func TestPackers(t *testing.T) {
-	for _, tst := range packTestData {
+	for i, tst := range packTestData {
 		var b []byte
+		if tst.r == nil || tst.b == nil {
+			t.Logf("Skipping test %d", i)
+		}
 		b, err := tst.r.Pack(b)
 		if err != nil {
 			t.Fatalf("Cannot pack %T: %s", tst.r, err)
@@ -152,9 +153,12 @@ func TestPackers(t *testing.T) {
 }
 
 func TestUnpackers(t *testing.T) {
-	for _, tst := range packTestData {
+	for i, tst := range packTestData {
 		var r ReqRes
 		var err error
+		if tst.r == nil || tst.b == nil {
+			t.Logf("Skipping test %d", i)
+		}
 		if tst.req {
 			r, err = NewReq(FnCode(tst.b[0]))
 		} else {
@@ -179,7 +183,10 @@ func TestUnpackers(t *testing.T) {
 }
 
 func TestSerPack(t *testing.T) {
-	for _, tst := range packTestData {
+	for i, tst := range packTestData {
+		if tst.r == nil || tst.b == nil {
+			t.Logf("Skipping test %d", i)
+		}
 		sadu, err := SerPack(nil, 0x01, tst.r)
 		if err != nil {
 			t.Fatalf("Cannot pack %T: %s", tst.r, err)

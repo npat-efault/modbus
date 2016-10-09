@@ -9,7 +9,7 @@ import "time"
 
 const (
 	// Minimum auto-calculated timeout
-	SerMinTimeout = 50 * time.Millisecond
+	SerMinTimeout = 20 * time.Millisecond
 	// Bits per transmitted character
 	SerBitsPerChar = 10
 )
@@ -36,7 +36,7 @@ type SerMaster struct {
 	Baudrate int
 	// Response timeout. Counting approx. from the *end* of the
 	// request transmission, until the reception of the first
-	// response byte (not dependent on baudrate)
+	// response byte.
 	Timeout time.Duration
 	// Frame timeout. Maximum time allowed for nothing to be
 	// received, while the reception of a response has started.
@@ -50,9 +50,10 @@ type SerMaster struct {
 	// Time the bus has to remain idle before the master is
 	// considered synchronized. The master synchronizes on the
 	// first call and after it detects a frame error or a bad
-	// frame.
+	// frame. (RTU only)
 	SyncDelay time.Duration
-	// Time to wait to (re-)synchronize before giving up.
+	// Time to wait to (re-)synchronize before giving up. (RTU
+	// only)
 	SyncWaitMax time.Duration
 	// Use ASCII frame encoding
 	Ascii bool

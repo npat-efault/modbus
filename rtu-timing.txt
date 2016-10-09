@@ -5,7 +5,7 @@ MODBUS Over Serial Line, RTU timing issues
 CAVEAT EMPTOR:
 
    Package modbus does NOT use silent intervals to detect the
-   boundaries of ModBus Over Serial, RTU encoded, frames (messages) as
+   boundaries of ModBus Over Serial RTU-encoded frames (messages) as
    described in the relevant spec. Instead, it parses the frame data
    on the fly to determine their length. This works very well for RTU
    masters and imposes no limitations. For RTU slaves, though, this
@@ -15,6 +15,9 @@ CAVEAT EMPTOR:
    implementation of special-purpose O/S asynchronous serial
    device-drivers, something that is well outside the scope of the
    project.
+
+   These limitations do NOT apply to MobBus Over TCP, neither to
+   ModBus over Serial with ASCII frame encoding.
 
 Read on if you wish to understand the details...
 
@@ -101,10 +104,57 @@ errors occur, our slave can keep itself synchronized by receiving and
 parsing all the traffic on the bus.
 
 
+## Timing Parameters
+
+The following timing parameters are defined for operation as master:
+
+- The master timeout MT: is the time the master will wait for the
+  first byte of a slave response (counting from the transmission of
+  the last request byte), before the master re-transmits the
+  request.
+
+- The master frame-timeout MT(fr): Is the time the master will wait
+  between bytes of a response before considering the response partial
+  and re-transmitting the request.
+
+- The master sync delay MSD: Is the length of silence on the bus the
+  master will wait-for in order to consider itself re-synchronized
+  (ready to transmit the next request). The master re-synchronizes
+  itself when it receives a bad frame (frame whose size it cannot
+  determine or frame with a CRC error).
+
+- The master max sync wait (MSW): The amount of time the master will
+  wait to become synchronized, before declaring an error and
+  abandoning the effort. This timeout could very well be infinite.
+
+And these for operation as slave:
+
+- The slave timeout ST: is the time the slave will wait for the response
+  (of anther slave) from the time the last request byte was
+  received. After that time, the slave will consider that the request
+  will not be replied, and switch to waiting for a new request.
+
+- The slave frame timeout ST(fr): is the time the slave will wait
+  between bytes of a response before it considers the response partial
+  and switches to listening for a request. Also the time the slave
+  will wait between bytes of a request before it considers the request
+  partial and switches to waiting for a new request.
+
+- The slave sync delay SSD: Is the length of silence on the bus the
+  slave will wait-for in order to consider itself
+  re-synchronized. Synchronized, means reasonably certain that the
+  next byte on the bus will be the start of a request. The slave
+  re-synchronizes itself when it receives a bad frame (frame whose
+  size it cannot determine or frame with a CRC error).
+
+- The slave max sync wait (SSW): The amount of time the slave will
+  wait to become synchronized, before declaring an error and
+  abandoning the effort. This timeout could very well be infinite.
 
 
+## Setting the timing parameters
 
-Given the following prerequisites:
+Taking the following as given:
 
 1. Once a slave receives a request it will start replying within a
 time T(sr), or not at all.
@@ -122,110 +172,109 @@ master, and it will start a new request. Stated differently: Bytes in
 a master request are not transmitted more than T(fr) apart, and slaves
 do not reply to partial requests.
 
-Given these you can configure the timeouts, on the master and the
-slave to satisfy the following. If we also assume that T(fr) < T(sr)
-(the usual case) then the requirements in the brackets are always and
-trivially satisfied.
+Given these, you can configure the timeouts, on the master and the
+slave to satisfy the following:
 
 For the master:
 
-- Master timeout (MT):  T(sr) < MT
-- Master frame timeout MT(fr): T(fr) < MT(fr), [and MT(fr) < MT]
+- Master timeout (MT):  T(sr) < MT,
+- Master frame timeout MT(fr): T(fr) < MT(fr)
 - Master sync delay MSD: T(fr) < MSD
-- Master max sync wait MSW: MSD <<< MSW
-
+- Master max sync wait MSW: MSD <<< MSW (possibly infinite)
+ 
 For the slave:
 
-- Slave timeout (ST): T(sr) < ST < MT, [and T(fr) < ST]
+- Slave timeout (ST): T(sr) < ST < MT
 - Slave frame timeout ST(fr): T(fr) < ST(fr) < MT(fr)
-- Slave sync delay SSD: T(sr) < SSD < MT, [and T(fr) < ST]
-- Slave max sync wait SSW: SSD <<< SSW
+- Slave sync delay SSD: T(sr) < SSD < MT, [and T(fr) < SSD]
+- Slave max sync wait SSW: SSD <<< SSW (possibly infinite)
 
-NOTES:
+Notes:
 
-- The master timeout MT: is the time the master will wait for the
-  first byte of a slave response (counting from the transmission of
-  the last request byte), before the master re-transmits the
-  request.
+- You should be *very* conservative with the Frame Timeouts (master
+  and slave) to account for latency introduced by hardware queueing
+  and buffering by the driver, and the O/S. Being conservative will
+  *not* degrade performance. These timeouts only protect against
+  partial replies (e.g. slave powered-off mid-frame) which are very
+  rare.
 
-- The master frame timeout MT(fr): Is the time the master will wait
-  between bytes of a response before considering the response partial
-  and re-transmitting the request.
-
-- The master sync delay MSD: Is the length of silence on the bus the
-  master will wait-for in order to consider itself re-synchronized
-  (ready to transmit the next request). The master re-synchronizes
-  itself when it receives a bad frame (frame whose size it cannot
-  determine or frame with a CRC error).
+- For the slave (implemented without using silent intervals to detect
+  frame boundaries, as described in this document) the tricky part is
+  the correct configuration of ST and SSD. They MUST be larger than
+  T(sr) and T(fr) AND smaller than MT. If this not satisfied, the
+  slave will not be able to synchronize.
 
 
-- The slave timeout ST: is the time the slave will wait for the response
-  (of anther slave) from the time the last request byte was
-  received. After that time, the slave will consider that the request
-  will not be replied, and switch to waiting for a new request. Again
-  in package modbus this is expressed with the "deadline" argument to
-  the ReceiveRes method.
-
-- The slave frame timeout ST(fr): is the time the slave will wait
-  between bytes of a response before it considers the response partial
-  and switches to listening for a request. Also the time the slave
-  will wait between bytes of a request before it considers the request
-  partial and switches to waiting for a new request.
-
-- The slave sync delay SSD: Is the length of silence on the bus the
-  slave will wait-for in order to consider itself
-  re-synchronized. Synchronized, means reasonably certain that the
-  next byte on the bus will be the start of a request. The slave
-  re-synchronizes itself when it receives a bad frame (frame whose
-  size it cannot determine or frame with a CRC error). This is tricky
-  because the condition can be satisfied only if SSD is POSITIVELY
-  larger than T(sr) (i.e. there *cannot* be a slave response coming)
-  and shorter than MT (otherwise we will never synchronize).
-
-- Be **very** conservative with the Frame Timeouts (master and slave)
-  to account for reception queueing by the hardware, the driver, and
-  the O/S. Being conservative will not degrade performance much, as
-  these timeouts only protect against partial replies which are,
-  anyway, very rare.
-
-EXAMPLE:
+## Example
 
 We know that our slaves will always start transmitting a reply, no
 latter than 50ms after they receive the request. We also know that our
-slave transmit all response bytes back-to-back, and the same is true
-for the master requests. The bus is operating at 9600bps (roughly
-assume a byte-time of 1ms).
+slaves transmit all response bytes back-to-back, and the same is true
+for the master requests.
 
-Timeout, master [MT]: 50ms + 16ms x 2 (for request-reception queuing
-delay at the slave and response-reception queuing delay at the master)
-= 82ms. A reasonable setting would be between 100ms - 150ms. Start
-with 200ms to be safe, and tighten-up once you see everything is
-working.
+For the master:
 
-Frame Timeout, master [MT(fr)]: Assuming 16-bytes queuing, more than
-16ms-20ms. Start with 70ms.
+- Timeout, master [MT]: We add 20ms x 2 to the 50ms to account for
+  20ms queuing and buffering latency (hardware, driver, or OS induced)
+  at the slave side and another 20ms at the master. This brings us to
+  90ms. Being extra conservative we start with a value near 180ms.
 
-Sync Delay, master [MSD]: Same as MT(fr) 
+- Frame Timeout, master [MT(fr)]: We assume 20ms latency, as above,
+  and being extra conservative we start with 90ms (doesn't affect
+  performance, anyway).
 
-Timeout, slave [ST]: Between 100ms (typically 82ms) and whatever you
-set MT. Start with 130ms.
+- Sync Delay, master [MSD]: Same as MT(fr) 
 
-Frame Timeout, slave [ST(fr)]: Less than MT(fr) but more than
-16ms. Start with 50ms.
+For the slave:
 
-Sync Delay, slave [SSD]: Same as ST
+- Timeout, slave [ST]: Between 90ms and whatever you set MT. We start
+  with 130ms.
+
+- Frame Timeout, slave [ST(fr)]: Less than MT(fr) but more than
+  20ms. Start with 60ms.
+
+- Sync Delay, slave [SSD]: Same as ST
+
+
+## Final Remarks
 
 Longer timeouts can never cause malfunction. An overly large Master /
 Slave Timeout will cause delays if a slave is powered-down or
-missing. An overly large Master / Slave Frame Timeout will only cause
-delays when a slave is powered-down mid-frame (which is, for every
-practical purpose, rare and insignificant).
+disconnected. An overly large Master / Slave Frame Timeout will only
+cause delays when a slave is powered-down mid-frame (which is very
+rare).
 
-Remember that the timeouts you set must be within the timing accuracy
-of your system (including O/S and multitasking delays). Depending on
-your system, do not count to be able to be accurate for anything
-bellow 10ms-20ms. For example when we say that ST < MT, the difference
-must be at least 10ms-20ms.
+Remember that the timeouts you set must account for the latency in
+your system (including O/S and multitasking delays). Depending on your
+system, do not count to be able to be accurate for anything bellow
+10ms-20ms. For example when we say that ST < MT, the difference must
+be at least 10ms-20ms.
 
 Timeouts have no effect, performance or otherwise, when the system is
-functioning correctly (no missing slaves).
+functioning correctly (no errors on the line, no missing slaves).
+
+
+[[[ ## Random thoughts ## ]]]
+
+Assume the unusual case where T(sr) < T(fr), and we configure the
+master with:
+
+  T(sr) < MT < T(fr) < MT(fr)
+
+For the slave we then have two options. Both bad:
+
+  1. Set T(fr) < SSD < MT(fr). In this case we reliably synchronize
+     only when we have a partial frame condition, which might never
+     happen
+
+  2. Set T(sr) < SSD < MT < T(fr). Then we may sync to the gap between
+     bytes in a slave's reply (false sync).
+
+The correct solution would be to set:
+
+  Master: T(sr) < T(fr) < MT / MT(fr)
+
+and
+
+  Slave: T(sr) < T(fr) < SSD < MT
+

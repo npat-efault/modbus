@@ -182,7 +182,8 @@ type SerReceiver interface {
 // SerReceiverRTU is the SerFrameReceiver implementation for
 // RTU-encoded ADUs.
 //
-// Note for calculating correct and efficient timing parameters.
+// For more details see the file "rtu-timing.txt", distributed with
+// the package sources.
 //
 type SerReceiverRTU struct {
 	r DeadlineReader
@@ -257,7 +258,8 @@ func (rcv *SerReceiverRTU) receive(b []byte,
 			break
 		}
 		if err != nil {
-			if isTimeout(err) {
+			if IsTimeout(err) {
+				// TODO(npat): Separate in-frame tmo?
 				return b, ErrTimeout
 			}
 			return b, wErrIO(err)
@@ -284,7 +286,7 @@ func (rcv *SerReceiverRTU) Sync() error {
 		rcv.r.SetReadDeadline(time.Now().Add(rcv.SyncDelay))
 		_, err := rcv.r.Read(b)
 		if err != nil {
-			if !isTimeout(err) {
+			if !IsTimeout(err) {
 				return wErrIO(err)
 			}
 			return nil

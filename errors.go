@@ -5,8 +5,6 @@
 
 package modbus
 
-import "errors"
-
 // ErrIO is used to wrap I/O errors.
 type ErrIO struct {
 	// Err is the original error
@@ -39,25 +37,40 @@ func wErrIO(e error) error {
 	return &ErrIO{e}
 }
 
-// tmoErrT is an error-type that tests true with isTimeout /
-// isTemporary
-type tmoErrT struct {
-	msg string
+// errT is an error-type with tags
+type errT struct {
+	tags uint
+	msg  string
 }
 
-func (e *tmoErrT) Error() string {
-	return e.msg
+// tags for errT-typed errors
+const (
+	efTmp = 1 << iota
+	efTmo
+	efCom
+)
+
+// mkErr returns a new errT error with the given tags (or'ed together)
+// and message.
+func mkErr(tags uint, msg string) error {
+	return &errT{tags: tags, msg: msg}
 }
 
-func (e *tmoErrT) Timeout() bool { return true }
-
-func (e *tmoErrT) Temporary() bool { return true }
-
-func tmoErr(msg string) error {
-	return &tmoErrT{msg}
+// mkErr returns a new errT error with the given message (no tags).
+func newErr(msg string) error {
+	return mkErr(0, msg)
 }
 
-func isTimeout(e error) bool {
+func (e *errT) Error() string { return e.msg }
+
+func (e *errT) Timeout() bool { return e.tags&efTmo != 0 }
+
+func (e *errT) Temporary() bool { return e.tags&efTmp != 0 }
+
+func (e *errT) Comm() bool { return e.tags&efCom != 0 }
+
+// IsTimeout, tests if error is a timeout
+func IsTimeout(e error) bool {
 	type tmoError interface {
 		Timeout() bool
 	}
@@ -67,7 +80,8 @@ func isTimeout(e error) bool {
 	return false
 }
 
-func isTemporary(e error) bool {
+// IsTemporary, tests if error is temporary
+func IsTemporary(e error) bool {
 	type tmoError interface {
 		Timeout() bool
 	}
@@ -77,21 +91,7 @@ func isTemporary(e error) bool {
 	return false
 }
 
-// commErrT is an error-type that tests true with isComm
-type commErrT struct {
-	msg string
-}
-
-func (e *commErrT) Error() string {
-	return e.msg
-}
-
-func (e *commErrT) Comm() bool { return true }
-
-func commErr(msg string) error {
-	return &commErrT{msg}
-}
-
+// IsComm, tests if error is a communication error
 func IsComm(e error) bool {
 	type commError interface {
 		Comm() bool
@@ -105,24 +105,25 @@ func IsComm(e error) bool {
 // Errors returned by functions and methods in this package. Other
 // errors may as well be returned which are not exported and subject
 // to change. Also, errors by functions and methods in other packages
-// may be returned. Consult the documentation of each specific
-// function or method for details.
+// may be returned. Consult the documentation of specific function or
+// method for details.
 //
-// Errors marked with "CM" test true with IsComm().
+// Errors tagged with "efTmp", "efTmo", and "efCom" test true with
+// IsTemporary(), IsTimeout(), and IsComm() respectivelly.
 var (
-	errFnCode  = errors.New("Invalid function code")
-	errFnUnsup = errors.New("Function code unsuported")
-	errPack    = errors.New("Packing error")
-	errUnpack  = errors.New("Unpacking error")
-	errTODO    = errors.New("TODO(npat) Unspecified error")
+	errFnCode  = newErr("Invalid function code")
+	errFnUnsup = newErr("Function code unsuported")
+	errPack    = newErr("Packing error")
+	errUnpack  = newErr("Unpacking error")
+	errTODO    = newErr("TODO(npat) Unspecified error")
 
 	// Serial ADU receiver errors
-	ErrFrame   = errors.New("Frame reception error") // CM
-	ErrCRC     = errors.New("Bad frame CRC")         // CM
-	ErrTimeout = tmoErr("Frame reception time-out")  // CM, TO, TMP
-	ErrSync    = errors.New("Failed to synchronize")
+	ErrFrame   = mkErr(efCom, "Frame reception error")
+	ErrCRC     = mkErr(efCom, "Bad frame CRC")
+	ErrTimeout = mkErr(efCom|efTmo|efTmp, "Frame reception time-out")
+	ErrSync    = newErr("Failed to synchronize")
 
-	// Errors returned by the client
-	ErrRequest  = errors.New("Bad or invalid request")
-	ErrResponse = errors.New("Bad or invalid response")
+	// Errors returned by the serial master
+	ErrRequest  = newErr("Bad or invalid request")
+	ErrResponse = newErr("Bad or invalid response")
 )
