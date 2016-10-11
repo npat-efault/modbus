@@ -13,12 +13,6 @@ import (
 
 func TestResFrameSz(t *testing.T) {
 	for _, tst := range packTestData {
-		var sz sizer
-		if tst.req {
-			sz = &reqSizer{}
-		} else {
-			sz = &resSizer{}
-		}
 		a, err := SerPack(nil, 0x01, tst.r)
 		if err != nil {
 			t.Fatalf("Cannot pack %T: %s", tst.r, err)
@@ -26,8 +20,15 @@ func TestResFrameSz(t *testing.T) {
 		if !a.CheckCRC() {
 			t.Fatalf("Failed CRC %T!", tst.r)
 		}
+		var sz sizer
 		for i := 0; i < len(a)+1; i++ {
-			nrem, ok := sz.size(a[:i])
+			var nrem int
+			var ok bool
+			if tst.req {
+				nrem, ok = sz.sizeReq(a[:i])
+			} else {
+				nrem, ok = sz.sizeRes(a[:i])
+			}
 			if !ok {
 				t.Fatalf("Unsupported %T", tst.r)
 			}

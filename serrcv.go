@@ -53,20 +53,16 @@ type DeadlineWriter interface {
 	SetWriteDeadline(t time.Time) error
 }
 
-// sizer calculates the size of modbus-serial ADUs
-type sizer interface {
-	// size returns the remaining bytes for the patially received
-	// frame in b. If the frame-size cannot be determined
-	// (unsupported function code), it returns 0, false
-	size(b []byte) (remain int, ok bool)
-}
-
-// resSizer is a sizer for RESPONSE ADUs
-type resSizer struct {
+// sizer calculates the size of modbus-serial ADUs. A new sizer (or
+// one initialized to zero) must be used for each ADU.
+type sizer struct {
 	sz int
 }
 
-func (s *resSizer) size(b []byte) (remain int, ok bool) {
+// sizeRes returns the remaining bytes for the patially received
+// response frame in b. If the frame-size cannot be determined
+// (unsupported function code), it returns 0, false
+func (s *sizer) sizeRes(b []byte) (remain int, ok bool) {
 	if s.sz != 0 {
 		return s.sz - len(b), true
 	}
@@ -99,12 +95,10 @@ func (s *resSizer) size(b []byte) (remain int, ok bool) {
 	}
 }
 
-// reqSizer is a sizer for REQUEST ADUs
-type reqSizer struct {
-	sz int
-}
-
-func (s *reqSizer) size(b []byte) (remain int, ok bool) {
+// sizeReq returns the remaining bytes for the patially received
+// request frame in b. If the frame-size cannot be determined
+// (unsupported function code), it returns 0, false
+func (s *sizer) sizeReq(b []byte) (remain int, ok bool) {
 	if s.sz != 0 {
 		return s.sz - len(b), true
 	}
@@ -186,7 +180,6 @@ type SerReceiver interface {
 // the package sources.
 //
 type SerReceiverRTU struct {
-	r DeadlineReader
 	// FrameTimeout is the intra-frame timeout. It is started when
 	// the first frame byte is received and refreshed whith the
 	// reception of any subsequent frame-bytes.
@@ -197,6 +190,8 @@ type SerReceiverRTU struct {
 	// Maximum time to wait for re-synchronization, before
 	// giving-up and returning ErrSync.
 	SyncWaitMax time.Duration
+	r           DeadlineReader
+	buf         [MaxSerADU]byte
 }
 
 // NewSerReceiverRTU returns a new receiver for RTU-encoded ADUs.
@@ -218,7 +213,7 @@ func NewSerReceiverRTU(r DeadlineReader) *SerReceiverRTU {
 // Sync method.
 func (rcv *SerReceiverRTU) ReceiveReq(b []byte,
 	deadline time.Time) (SerADU, error) {
-	return rcv.receive(b, deadline, &reqSizer{})
+	return rcv.receive(b, deadline, true)
 }
 
 // ReceiveRes receives a RESPONSE ADU. Upon entry the receiver must be
@@ -230,25 +225,34 @@ func (rcv *SerReceiverRTU) ReceiveReq(b []byte,
 // Sync method.
 func (rcv *SerReceiverRTU) ReceiveRes(b []byte,
 	deadline time.Time) (SerADU, error) {
-	return rcv.receive(b, deadline, &resSizer{})
+	return rcv.receive(b, deadline, false)
 }
 
 func (rcv *SerReceiverRTU) receive(b []byte,
-	deadline time.Time, sz sizer) (SerADU, error) {
+	deadline time.Time, req bool) (SerADU, error) {
 
-	var buf [MaxSerADU]byte
-	var be = buf[:]
+	var be = rcv.buf[:]
 	var fr = be[0:0]
+	var sz sizer
 
 	rcv.r.SetReadDeadline(deadline)
 
-	nrem, _ := sz.size(fr)
+	var nrem int
+	if req {
+		nrem, _ = sz.sizeReq(fr)
+	} else {
+		nrem, _ = sz.sizeRes(fr)
+	}
 	for {
 		n, err := rcv.r.Read(be[:nrem])
 		be = be[n:]
 		fr = fr[:len(fr)+n]
 		var ok bool
-		nrem, ok = sz.size(fr)
+		if req {
+			nrem, ok = sz.sizeReq(fr)
+		} else {
+			nrem, ok = sz.sizeRes(fr)
+		}
 		if !ok {
 			// Unsuported function code
 			return b, ErrFrame
