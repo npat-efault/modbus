@@ -115,7 +115,6 @@ var (
 	errFnUnsup = newErr("Function code unsuported")
 	errPack    = newErr("Packing error")
 	errUnpack  = newErr("Unpacking error")
-	errTODO    = newErr("TODO(npat) Unspecified error")
 
 	// Serial ADU receiver errors
 	ErrFrame   = mkErr(efCom, "Frame reception error")
