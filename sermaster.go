@@ -88,12 +88,10 @@ func (sm *SerMaster) Init(conn DeadlineReadWriter) {
 		sm.SyncWaitMax = DflSerSyncWaitMax
 	}
 	if sm.Ascii {
-		// sc.rcv = &SerReceiverASCII{r: sc.Conn}
+		// ...
 	} else {
 		// Create and configure receiver
 		rcv := NewSerReceiverRTU(sm.conn)
-		// Don't set timeout, we use rcv.Deadline instead
-		// rcv.Timeout = sm.Timeout
 		rcv.FrameTimeout = sm.FrameTimeout
 		rcv.SyncDelay = sm.SyncDelay
 		rcv.SyncWaitMax = sm.SyncWaitMax
