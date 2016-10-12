@@ -12,6 +12,21 @@ is supported (RTU and ASCII frame encodings) as well as ModBus over
 TCP. Additionally, implementations of simple modbus clients and
 servers are included.
 
+The package's only external dependency, other than the standard
+library, is package "github.com/npat-efault/crc16". Regardless, in
+order to actually use the ModBus-over-serial functionality you will
+have to provide a type for doing I/O over serial ports and character
+devices. This type should implement the DeadlineReadWriter interface,
+that is, it should provide Read(), Write() and deadline-setting
+methods (pretty much like a net.Conn). For Unix-like systems such
+functionality is provided by packages:
+
+  github.com/npat-efault/poller
+  github.com/npat-efault/serial
+
+For ModBus over TCP, net.Conn provides all the required functionality
+so you don't need anything other than the standard library.
+
 Typical usage example: Using package modbus you can issue a
 read-discrete-inputs requests to a modbus-over-serial slave (with
 node-id 0x01) like this:
@@ -47,6 +62,8 @@ wish to (or cannot) use package serial (or something equivalent) you
 can use (as a last resort) standard file-io by mocking-up dummy
 methods to set deadlines/timeouts (that do nothing). Unfortunatelly by
 doing so you cannot have timeouts and retransmissions.
+
+Package organization
 
 The modbus package is structured like this (from lower to higher-level
 provisions):
