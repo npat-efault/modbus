@@ -99,6 +99,8 @@ func (sm *SerMaster) Init(conn DeadlineReadWriter) {
 	}
 }
 
+// TODO(npat): Add echo-mode support?
+
 // SndRcv transmits the request ADU and receives a response ADU. The
 // response ADU is appended to byte-slice b. It is ok for b to be
 // nil. Pass a non-nil b if you want to use pre-allocated space for

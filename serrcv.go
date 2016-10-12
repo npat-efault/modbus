@@ -149,7 +149,7 @@ func (s *sizer) sizeReq(b []byte) (remain int, ok bool) {
 // and one for ASCII-encoded ADUs.
 type SerReceiver interface {
 	// ReceiveReq and ReceiveRes read (receive) response or
-	// request serial frames (ADU). They appends the ADU at
+	// request serial frames (ADUs). They append the ADU at
 	// byte-slice b. It is ok for b to be nil. Pass a non-nil b if
 	// you want to use pre-allocated space. The first byte of the
 	// frame must be received before the given deadline
