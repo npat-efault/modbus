@@ -100,10 +100,10 @@ func (ss *SerSlave) Init(conn DeadlineReadWriter) {
 }
 
 // Start starts the slave. The slave is considered running after
-// calling this method, and before it returns. It is typical to
-// execute this method in a separate goroutine. To stop a running
-// slave close the DeadlineReadWriter you supplied at Init, and wait
-// for Start to return.
+// calling this method, and until it returns. It is typical to execute
+// this method in a separate goroutine. To stop a running slave close
+// the DeadlineReadWriter you supplied at Init, and wait for Start to
+// return.
 func (ss *SerSlave) Start() error {
 	return ss.run()
 }
@@ -147,12 +147,13 @@ func (ss *SerSlave) handle(reqADU SerADU) SerADU {
 // TODO(npat): Add echo-mode support?
 
 func (ss *SerSlave) transmit(res SerADU) error {
+	// Transmit timeout, just in case. Should never expire.
+	const txTmo = 2 * time.Second
 	// Observe delay
 	if ss.Delay > 0 {
 		time.Sleep(ss.Delay)
 	}
-	// Put a timeout on write, just in case
-	// deadline := TODO(npat)
+	ss.conn.SetWrtieTimeout(time.Now().Add(txTmo))
 	_, err := ss.conn.Write(res)
 	if err != nil {
 		return wErrIO(err)
@@ -161,6 +162,8 @@ func (ss *SerSlave) transmit(res SerADU) error {
 }
 
 func (ss *SerSlave) run() error {
+	// Wait for request timeout. Go back waiting if it expires.
+	const reqTmo = 1 * time.Second
 	var err error
 	for {
 		if !ss.synced {
@@ -172,7 +175,7 @@ func (ss *SerSlave) run() error {
 		}
 		reqADU := SerADU(ss.reqBuf[:])
 		// Receive request
-		reqADU, err = ss.rcv.ReceiveReq(reqADU, time.Time{})
+		reqADU, err = ss.rcv.ReceiveReq(reqADU, time.Now().Add(reqTmo))
 		if err != nil {
 			if _, ok := err.(*ErrIO); ok {
 				break
