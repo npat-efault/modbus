@@ -5,7 +5,7 @@
 
 package modbus
 
-import "github.com/npat-efault/gohacks/crc16"
+import "github.com/npat-efault/crc16"
 
 // SerADU is a byte-slice holding a ModBus serial ADU
 type SerADU []byte
