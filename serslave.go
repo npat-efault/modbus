@@ -153,7 +153,7 @@ func (ss *SerSlave) transmit(res SerADU) error {
 	if ss.Delay > 0 {
 		time.Sleep(ss.Delay)
 	}
-	ss.conn.SetWrtieTimeout(time.Now().Add(txTmo))
+	ss.conn.SetWriteDeadline(time.Now().Add(txTmo))
 	_, err := ss.conn.Write(res)
 	if err != nil {
 		return wErrIO(err)
