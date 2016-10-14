@@ -173,6 +173,10 @@ type SerReceiver interface {
 	Sync() error
 }
 
+// TODO(npat): Export reception-buffer, can be used by users that
+// handle only a single request at a time, like
+// rcv.Receive(rcv.Buf[:], deadline) to avoid the extra copy.
+
 // SerReceiverRTU is the SerFrameReceiver implementation for
 // RTU-encoded ADUs.
 //
