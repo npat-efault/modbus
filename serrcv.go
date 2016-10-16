@@ -149,12 +149,13 @@ func (s *sizer) sizeReq(b []byte) (remain int, ok bool) {
 // and one for ASCII-encoded ADUs.
 type SerReceiver interface {
 	// ReceiveReq and ReceiveRes read (receive) response or
-	// request serial frames (ADUs). They append the ADU at
-	// byte-slice b. It is ok for b to be nil. Pass a non-nil b if
-	// you want to use pre-allocated space. The first byte of the
-	// frame must be received before the given deadline
-	// expires. Returns the appended-to byte-slice as a SerADU. On
-	// error it returns b unaffected, along with the error.
+	// request serial frames (ADUs) respectively. They append the
+	// received ADU at byte-slice b. It is ok for b to be
+	// nil. Pass a non-nil b if you want to use pre-allocated
+	// space. The first byte of the frame must be received before
+	// the given deadline expires. Returns the appended-to
+	// byte-slice as a SerADU. On error it returns b unaffected,
+	// along with the error.
 	//
 	// The error returned can be one of the following: ErrFrame
 	// (cannot receive frame), ErrCRC (bad frame CRC), ErrTimeout
@@ -165,6 +166,13 @@ type SerReceiver interface {
 	ReceiveReq(b []byte, deadline time.Time) (SerADU, error)
 	ReceiveRes(b []byte, deadline time.Time) (SerADU, error)
 
+	// Buf returns an empty (zero-len) byte-slice positioned at
+	// the beginning of the internal receiver buffer. You can pass
+	// Buf() as the first (b) argument to ReceiveReq or ReceiveRes
+	// and avoid the copy from the internal buffer. Buf() may
+	// return nil.
+	Buf() []byte
+
 	// Sync must be called to syncronize the master or slave to
 	// the serial bus. Sync returns nil (succesfully synced),
 	// ErrSync (failed to sync), or any error returned by the
@@ -173,15 +181,12 @@ type SerReceiver interface {
 	Sync() error
 }
 
-// TODO(npat): Export reception-buffer, can be used by users that
-// handle only a single request at a time, like
-// rcv.Receive(rcv.Buf[:], deadline) to avoid the extra copy.
-
 // SerReceiverRTU is the SerFrameReceiver implementation for
-// RTU-encoded ADUs.
+// RTU-encoded ADUs. Exported fields can be changed between calls to
+// receiver methods. All have reasonable defaults.
 //
-// For more details see the file "rtu-timing.txt", distributed with
-// the package sources.
+// For more details on timing parameters see the file
+// "rtu-timing.txt", distributed with the package sources.
 //
 type SerReceiverRTU struct {
 	// FrameTimeout is the intra-frame timeout. It is started when
@@ -232,6 +237,16 @@ func (rcv *SerReceiverRTU) ReceiveRes(b []byte,
 	return rcv.receive(b, deadline, false)
 }
 
+func appendBytes(a, b []byte) []byte {
+	if len(b) == 0 {
+		return a
+	}
+	if cap(a) >= len(a)+len(b) && &a[:len(a)+1][len(a)] == &b[0] {
+		return a[:len(a)+len(b)]
+	}
+	return append(a, b...)
+}
+
 func (rcv *SerReceiverRTU) receive(b []byte,
 	deadline time.Time, req bool) (SerADU, error) {
 
@@ -278,8 +293,12 @@ func (rcv *SerReceiverRTU) receive(b []byte,
 	if !a.CheckCRC() {
 		return b, ErrCRC
 	}
-	b = append(b, a...)
+	b = appendBytes(b, a)
 	return b, nil
+}
+
+func (rcv *SerReceiverRTU) Buf() []byte {
+	return rcv.buf[0:0]
 }
 
 // Sync synchronizes the slave or master on the bus. Must be called
