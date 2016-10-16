@@ -18,7 +18,7 @@ type SerHandlerRaw interface {
 // SerSlave is a modbus-over-serial slave (server). Before starting
 // it, of after changing the parameters below, you *must* call the
 // Init method. Parameters must not be changed while the server is
-// running (i.e. after calling Start and before it returns).
+// running (i.e. after calling Start and until it returns).
 type SerSlave struct {
 	// Node-Id this slave responds to. If zero, all request are
 	// passed to the handler, which decides to process them or
@@ -65,7 +65,7 @@ type SerSlave struct {
 // DeadlineReadWriter where the slave will receive requests and
 // transmit responses to. You must call Init before starting the
 // server. You must not call it again while the server is running
-// (i.e. after calling method Start and before it returns).
+// (i.e. after calling method Start and until it returns).
 func (ss *SerSlave) Init(conn DeadlineReadWriter) {
 	// Fixup params
 	if ss.Timeout <= 0 {
@@ -84,7 +84,6 @@ func (ss *SerSlave) Init(conn DeadlineReadWriter) {
 	if ss.SyncWaitMax <= 0 {
 		ss.SyncWaitMax = DflSerSyncWaitMax
 	}
-
 	ss.conn = conn
 	if ss.Ascii {
 		// ...
