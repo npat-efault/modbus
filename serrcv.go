@@ -25,6 +25,7 @@ const (
 	DflSerSlvSyncDelay    = DflSerSlvTimeout
 
 	// Common
+	DflSerBaudrate    = 9600
 	DflSerDelay       = 10 * time.Millisecond
 	DflSerSyncWaitMax = 10 * time.Second
 	minTimeout        = 50 * time.Millisecond
@@ -322,6 +323,50 @@ func (rcv *SerReceiverRTU) Sync() error {
 			return ErrSync
 		}
 	}
+}
+
+// SerTransmitter is a frame transmitter for modbus-over-serial frames
+// (ADUs). There are two implementations: One for RTU-encoded ADUs,
+// and one for ASCII-encoded ADUs.
+type SerTransmitter interface {
+	Transmit(a SerADU) (deadline time.Time, err error)
+}
+
+// SerTransmitterRTU is the SerTransmitter implementation for
+// RTU-encoded ADUs. Exported fields can be changed between calls to
+// transmitter methods. All have reasonable defaults.
+//
+// For more details on timing parameters see the file
+// "rtu-timing.txt", distributed with the package sources.
+type SerTransmitterRTU struct {
+	// Baudrate is the transmission baudrate (bit-rate). It is
+	// used for deadline calculations.
+	Baudrate int
+	// Delay is the time the transmitter should wait before
+	// transmitting a frame (this wait time is mecessary for nodes
+	// that detect frames using silent intervals).
+	Delay time.Duration
+	w     DeadlineWriter
+}
+
+func NewSerTransmitterRTU(w DeadlineWriter) *SerTransmitterRTU {
+	trx := &SerTransmitterRTU{w: w}
+	trx.Baudrate = DflSerBaudrate
+	trx.Delay = DflSerDelay
+	return trx
+}
+
+func (trx *SerTransmitterRTU) Transmit(a SerADU) (time.Time, error) {
+	if trx.Delay > 0 {
+		time.Sleep(trx.Delay)
+	}
+	_, deadline := SerBusTime(trx.Baudrate, len(a), 1.0)
+	trx.w.SetWriteDeadline(deadline)
+	_, err := trx.w.Write(a)
+	if err != nil {
+		return time.Time{}, wErrIO(err)
+	}
+	return deadline, nil
 }
 
 type SerReceiverASCII struct {
