@@ -116,11 +116,12 @@ var (
 	errPack    = newErr("Packing error")
 	errUnpack  = newErr("Unpacking error")
 
-	// Serial ADU receiver errors
-	ErrFrame   = mkErr(efCom, "Frame reception error")
-	ErrCRC     = mkErr(efCom, "Bad frame CRC")
-	ErrTimeout = mkErr(efCom|efTmo|efTmp, "Frame reception time-out")
-	ErrSync    = newErr("Failed to synchronize")
+	// Serial ADU receiver and transmitter errors
+	ErrFrame    = mkErr(efCom, "Framing error")
+	ErrCRC      = mkErr(efCom, "Bad frame CRC")
+	ErrTransmit = mkErr(efCom, "Frame transmission failure")
+	ErrTimeout  = mkErr(efCom|efTmo|efTmp, "Frame reception time-out")
+	ErrSync     = newErr("Failed to synchronize")
 
 	// Errors returned by the serial master
 	ErrRequest  = newErr("Bad or invalid request")
