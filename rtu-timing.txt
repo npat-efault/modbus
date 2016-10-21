@@ -7,9 +7,9 @@ CAVEAT EMPTOR:
    Package modbus does NOT use silent intervals to detect the
    boundaries of ModBus Over Serial RTU-encoded frames (messages) as
    described in the relevant spec. Instead, it parses the frame data
-   on the fly to determine their length. This works very well for RTU
-   masters and imposes no limitations. For RTU slaves, though, this
-   approach has significant issues, does impose limitations, and
+   on the fly to determine their length. This works well for RTU
+   masters and imposes no serious limitations. For RTU slaves, though,
+   this approach has significant issues, does impose limitations, and
    introduces flakiness that must be carefully
    controlled. Unfortunately, every other solution would mandate the
    implementation of special-purpose O/S asynchronous serial
@@ -172,6 +172,8 @@ master, and it will start a new request. Stated differently: Bytes in
 a master request are not transmitted more than T(fr) apart, and slaves
 do not reply to partial requests.
 
+4. T(fr) < T(sr)
+
 Given these, you can configure the timeouts, on the master and the
 slave to satisfy the following:
 
@@ -179,7 +181,7 @@ For the master:
 
 - Master timeout (MT):  T(sr) < MT,
 - Master frame timeout MT(fr): T(fr) < MT(fr)
-- Master sync delay MSD: T(fr) < MSD
+- Master sync delay MSD: T(sr) < MSD
 - Master max sync wait MSW: MSD <<< MSW (possibly infinite)
  
 For the slave:
@@ -223,7 +225,7 @@ For the master:
   and being extra conservative we start with 90ms (doesn't affect
   performance, anyway).
 
-- Sync Delay, master [MSD]: Same as MT(fr) 
+- Sync Delay, master [MSD]: Same as MT 
 
 For the slave:
 
