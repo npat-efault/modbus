@@ -11,14 +11,12 @@ import (
 	"time"
 )
 
-// ModBus over serial default timing parameters
+// ModBus over serial default timing parameters (very conservative)
 const (
-	// Conservative default values
-
 	// For masters
 	DflSerMstTimeout      = 150 * time.Millisecond
 	DflSerMstFrameTimeout = 60 * time.Millisecond
-	DflSerMstSyncDelay    = DflSerMstFrameTimeout
+	DflSerMstSyncDelay    = DflSerMsTimeout
 	// For slaves
 	DflSerSlvTimeout      = 100 * time.Millisecond
 	DflSerSlvFrameTimeout = 40 * time.Millisecond
@@ -29,7 +27,25 @@ const (
 	DflSerDelay       = 10 * time.Millisecond
 	DflSerSyncWaitMax = 10 * time.Second
 	minTimeout        = 50 * time.Millisecond
+
+	// Minimum auto-calculated timeout
+	SerMinTimeout = 20 * time.Millisecond
+	// Bits per transmitted character
+	SerBitsPerChar = 11
 )
+
+// SerBusTime calculates the time it takes to transmit "n" chars, at
+// the given bitrate. The time calculated is multipled by "factor",
+// and clamped-down by SerMinTimeout. It is returned as a timeout
+// (relative) along with the respective deadline (absolute).
+func SerBusTime(baudrate int, n int, factor float64) (time.Duration, time.Time) {
+	ns := uint64(n) * SerBitsPerChar * uint64(1000000000) / uint64(baudrate)
+	d := time.Duration(float64(ns)*factor) * time.Nanosecond
+	if d < SerMinTimeout {
+		d = SerMinTimeout
+	}
+	return d, time.Now().Add(d)
+}
 
 // DeadlineReadWriter is an io.ReadWriter with additional methods to
 // set deadlines on read and write calls. Network connections
@@ -343,19 +359,26 @@ type SerTransmitterRTU struct {
 	// used for deadline calculations.
 	Baudrate int
 	// Delay is the time the transmitter should wait before
-	// transmitting a frame (this wait time is mecessary for nodes
+	// transmitting a frame (this wait time is necessary for nodes
 	// that detect frames using silent intervals).
 	Delay time.Duration
-	w     DeadlineWriter
+	w     DeadlineReadWriter
+	buf   [16]byte
 }
 
-func NewSerTransmitterRTU(w DeadlineWriter) *SerTransmitterRTU {
+// NewSerTransmitterRTU returns a new transmitter for RTU-encoded ADUs.
+func NewSerTransmitterRTU(w DeadlineReadWriter) *SerTransmitterRTU {
 	trx := &SerTransmitterRTU{w: w}
 	trx.Baudrate = DflSerBaudrate
 	trx.Delay = DflSerDelay
 	return trx
 }
 
+// TODO(npat): Consider echo-enabled mode, and possibly RTS-enable?
+
+// Transmit transmits serial frame (ADU) a. Before starting the
+// transmission it observes the specified delay (to guarantee a min
+// silent interval).
 func (trx *SerTransmitterRTU) Transmit(a SerADU) (time.Time, error) {
 	if trx.Delay > 0 {
 		time.Sleep(trx.Delay)
@@ -365,6 +388,18 @@ func (trx *SerTransmitterRTU) Transmit(a SerADU) (time.Time, error) {
 	_, err := trx.w.Write(a)
 	if err != nil {
 		return time.Time{}, wErrIO(err)
+	}
+	if a.Node() == 0x0 {
+		// Broadcast: Wait frame transmission
+		// Could also just time.Sleep()
+		trx.w.SetReadDeadline(deadline)
+		n, err := trx.w.Read(trx.buf[:])
+		if err == nil {
+			return time.Time{}, ErrTransmit
+		}
+		if !IsTimeout(err) {
+			return time.Time{}, wErrIO(err)
+		}
 	}
 	return deadline, nil
 }

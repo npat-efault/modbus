@@ -7,31 +7,33 @@ package modbus
 
 import "time"
 
-const (
-	// Minimum auto-calculated timeout
-	SerMinTimeout = 20 * time.Millisecond
-	// Bits per transmitted character
-	SerBitsPerChar = 10
-)
+// SerMaster is a modbus-over-serial master (client). Exported fields
+// can be changed between calls to master methods. All have
+// reasonable defaults.
+type SerMaster struct {
+	// Response timeout. Counting approx. from the *end* of the
+	// request transmission, until the reception of the first
+	// response byte.
+	Timeout time.Duration
+	// Number of request retransmission, if no response is
+	// received.
+	Retrans int
 
-// SerBusTime calculates the time it takes to transmit "n" chars, at
-// the given bitrate. The time calculated is multipled by "factor",
-// and clamped-down by SerMinTimeout. It is returned as a timeout
-// (relative) along with the respective deadline (absolute).
-func SerBusTime(baudrate int, n int, factor float64) (time.Duration, time.Time) {
-	ns := uint64(n) * SerBitsPerChar * uint64(1000000000) / uint64(baudrate)
-	d := time.Duration(float64(ns)*factor) * time.Nanosecond
-	if d < SerMinTimeout {
-		d = SerMinTimeout
-	}
-	return d, time.Now().Add(d)
+	rcv    SerReceiver
+	trx    SerTransmitter
+	synced bool
 }
 
-// SerMaster is a modbus-over-serial master (client). Before using, or
-// after changing any of the parameters below, you *must* call the
-// Init method.
-type SerMaster struct {
-	conn DeadlineReadWriter
+// NewSerMaster returns a modbus-over-serial master (client) that uses
+// the given serial receiver (rcv) and transmitter (trx).
+func NewSerMaster(rcv SerReceiver, trx SerTransmitter) *SerMaster {
+	return &SerMaster{rcv: rcv, trx: trx}
+}
+
+// SerMasterConf are the modbus-over-serial master (client)
+// configuration parameters used by function NewSerMasterStd. Zero
+// values for all fields will be replaced by reasonable defaults.
+type SerMasterConf struct {
 	// Serial bus bitrate. Used for timeout calculations
 	Baudrate int
 	// Response timeout. Counting approx. from the *end* of the
@@ -57,49 +59,55 @@ type SerMaster struct {
 	SyncWaitMax time.Duration
 	// Use ASCII frame encoding
 	Ascii bool
-
-	rcv      SerReceiver
-	timeLast time.Time
-	synced   bool
 }
 
-// Init must be called before using the master, and after changing any
-// of it's config params.
-func (sm *SerMaster) Init(conn DeadlineReadWriter) {
-	sm.conn = conn
+// NewSerMasterStd returns a modbus-over-serial master (client) that
+// uses the standard receiver (SerReceiver{RTU|ASCII}) and transmitter
+// (SerTransmitter{RTU|ASCII}) implementations, receiving and
+// transmitting frames on conn. The master is configured using the
+// parameters in cfg.
+func NewSerMasterStd(conn DeadlineReadWriter, cfg SerMasterConf) *SerMaster {
+	var sm *SerMaster
 	// Fixup params
-	if sm.Baudrate <= 0 {
-		sm.Baudrate = 9600
+	if cfg.Baudrate <= 0 {
+		cfg.Baudrate = 9600
 	}
-	if sm.Timeout <= 0 {
-		sm.Timeout = DflSerMstTimeout
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = DflSerMstTimeout
 	}
-	if sm.FrameTimeout <= 0 {
+	if cfg.FrameTimeout <= 0 {
 		// Calc from baudrate ??
-		sm.FrameTimeout = DflSerMstFrameTimeout
+		cfg.FrameTimeout = DflSerMstFrameTimeout
 	}
-	if sm.Delay <= 0 {
-		sm.Delay = DflSerDelay
+	if cfg.Delay <= 0 {
+		cfg.Delay = DflSerDelay
 	}
-	if sm.SyncDelay <= 0 {
-		sm.SyncDelay = DflSerMstSyncDelay
+	if cfg.SyncDelay <= 0 {
+		cfg.SyncDelay = DflSerMstSyncDelay
 	}
-	if sm.SyncWaitMax <= 0 {
-		sm.SyncWaitMax = DflSerSyncWaitMax
+	if cfg.SyncWaitMax <= 0 {
+		cfg.SyncWaitMax = DflSerSyncWaitMax
 	}
-	if sm.Ascii {
+	if cfg.Ascii {
 		// ...
 	} else {
 		// Create and configure receiver
-		rcv := NewSerReceiverRTU(sm.conn)
-		rcv.FrameTimeout = sm.FrameTimeout
-		rcv.SyncDelay = sm.SyncDelay
-		rcv.SyncWaitMax = sm.SyncWaitMax
+		rcv := NewSerReceiverRTU(conn)
+		rcv.FrameTimeout = cfg.FrameTimeout
+		rcv.SyncDelay = cfg.SyncDelay
+		rcv.SyncWaitMax = cfg.SyncWaitMax
 		sm.rcv = rcv
+		// Create and configure transmitter
+		trx := NewSerTransmitterRTU(conn)
+		trx.Baudrate = cfg.Baudrate
+		trx.Delay = cfg.Delay
+		// Create and configure master
+		sm = NewSerMaster(rcv, trx)
+		sm.Timeout = cfg.Timeout
+		sm.Retrans = cfg.Retrans
 	}
+	return sm
 }
-
-// TODO(npat): Add echo-mode support?
 
 // SndRcv transmits the request ADU and receives a response ADU. The
 // response ADU is appended to byte-slice b. It is ok for b to be
@@ -108,21 +116,13 @@ func (sm *SerMaster) Init(conn DeadlineReadWriter) {
 // error it returns b unaffected, along with the error. Exception
 // responses by the slave are not considered errors.
 //
-// Errors returned by SndRcv are: ErrFrame (cannot receive response
-// frame), ErrCRC (bad response frame CRC), ErrTimeout (response
-// reception timeout), ErrSync (failed to sync to the bus), and any
-// I/O error returned by the DeadlineReadWriter, wrapped in ErrIO. Of
-// these ErrIO, and possibly ErrSync should be considered fatal.
+// Errors returned by SndRcv are: ErrFrame (framing error, cannot
+// receive response frame), ErrCRC (bad response frame CRC),
+// ErrTimeout (response reception timeout), ErrSync (failed to sync to
+// the bus), and any I/O error returned by the DeadlineReadWriter,
+// wrapped in ErrIO. Of these ErrIO, and possibly ErrSync should be
+// considered fatal.
 func (sm *SerMaster) SndRcv(req SerADU, b []byte) (SerADU, error) {
-	if sm.synced {
-		// Observe delay
-		if !sm.Ascii {
-			dt := time.Now().Sub(sm.timeLast)
-			if dt < sm.Delay {
-				time.Sleep(sm.Delay - dt)
-			}
-		}
-	}
 	var err error
 	for try := sm.Retrans + 1; try > 0; try-- {
 		// Sync to bus, if required
@@ -133,22 +133,16 @@ func (sm *SerMaster) SndRcv(req SerADU, b []byte) (SerADU, error) {
 			sm.synced = true
 		}
 		// Transmit request
-		// Calculate request transmission time
-		_, deadline := SerBusTime(sm.Baudrate, len(req), 1.0)
-		sm.conn.SetWriteDeadline(deadline)
-		_, err = sm.conn.Write(req)
+		var deadline time.Time
+		deadline, err = sm.trx.Transmit(req)
 		if err != nil {
-			// Don't retransmit on timeout.
-			// We should not timeout on write.
-			err = wErrIO(err)
+			sm.synced = false
 			break
 		}
-
 		if req.Node() == 0x0 {
 			// Broadcast, no response
 			break
 		}
-
 		// Receive response
 		var a SerADU
 		// Set receiver deadline (take into account the
@@ -161,6 +155,7 @@ func (sm *SerMaster) SndRcv(req SerADU, b []byte) (SerADU, error) {
 				continue
 			}
 			if _, ok := err.(*ErrIO); ok {
+				sm.synced = false
 				break
 			}
 			// Timeout. Retry.
@@ -168,7 +163,6 @@ func (sm *SerMaster) SndRcv(req SerADU, b []byte) (SerADU, error) {
 		}
 		// Response ok
 		b = a
-		sm.timeLast = time.Now()
 		break
 	}
 	return b, err
