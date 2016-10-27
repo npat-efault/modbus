@@ -63,9 +63,8 @@ type SerMasterConf struct {
 
 // NewSerMasterStd returns a modbus-over-serial master (client) that
 // uses the standard receiver (SerReceiver{RTU|ASCII}) and transmitter
-// (SerTransmitter{RTU|ASCII}) implementations, receiving and
-// transmitting frames on conn. The master is configured using the
-// parameters in cfg.
+// (SerTransmitter{RTU|ASCII}). The master receives and transmits
+// frames on conn, and is configured using the parameters in cfg.
 func NewSerMasterStd(conn DeadlineReadWriter, cfg SerMasterConf) *SerMaster {
 	var sm *SerMaster
 	// Fixup params
@@ -89,7 +88,7 @@ func NewSerMasterStd(conn DeadlineReadWriter, cfg SerMasterConf) *SerMaster {
 		cfg.SyncWaitMax = DflSerSyncWaitMax
 	}
 	if cfg.Ascii {
-		// ...
+		panic("TODO(npat): ASCII encoding not supported!")
 	} else {
 		// Create and configure receiver
 		rcv := NewSerReceiverRTU(conn)
