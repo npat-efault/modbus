@@ -16,18 +16,15 @@ const (
 	// For masters
 	DflSerMstTimeout      = 150 * time.Millisecond
 	DflSerMstFrameTimeout = 60 * time.Millisecond
-	DflSerMstSyncDelay    = DflSerMsTimeout
+	DflSerMstSyncDelay    = DflSerMstTimeout
 	// For slaves
 	DflSerSlvTimeout      = 100 * time.Millisecond
 	DflSerSlvFrameTimeout = 40 * time.Millisecond
 	DflSerSlvSyncDelay    = DflSerSlvTimeout
-
 	// Common
 	DflSerBaudrate    = 9600
 	DflSerDelay       = 10 * time.Millisecond
 	DflSerSyncWaitMax = 10 * time.Second
-	minTimeout        = 50 * time.Millisecond
-
 	// Minimum auto-calculated timeout
 	SerMinTimeout = 20 * time.Millisecond
 	// Bits per transmitted character
@@ -393,7 +390,7 @@ func (trx *SerTransmitterRTU) Transmit(a SerADU) (time.Time, error) {
 		// Broadcast: Wait frame transmission
 		// Could also just time.Sleep()
 		trx.w.SetReadDeadline(deadline)
-		n, err := trx.w.Read(trx.buf[:])
+		_, err := trx.w.Read(trx.buf[:])
 		if err == nil {
 			return time.Time{}, ErrTransmit
 		}
