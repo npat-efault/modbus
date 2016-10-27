@@ -15,11 +15,38 @@ type SerHandlerRaw interface {
 	Handle(req SerADU, res SerADU) SerADU
 }
 
-// SerSlave is a modbus-over-serial slave (server). Before starting
-// it, of after changing the parameters below, you *must* call the
-// Init method. Parameters must not be changed while the server is
-// running (i.e. after calling Start and until it returns).
+// SerSlave is a modbus-over-serial slave (server). Exported fields
+// can be changed between calls to master methods. All have reasonable
+// defaults.
 type SerSlave struct {
+	// Node-Id this slave responds to. If zero, all request are
+	// passed to the handler, which decides to process and respond
+	// to them or not.
+	NodeId uint8
+	// Handler and HandelrRaw is where requests (with matching
+	// node-ids) are passed to. With both handlers nil the slave
+	// only monitors the bus for requests from the master and
+	// responses from other slaves. It never responds to a
+	// request. With both handlers non-nil, Handler is used.
+	Handler    SerHandler
+	HandlerRaw SerHandlerRaw
+
+	rcv    SerReceiver
+	trx    SerTransmitter
+	synced bool
+	cnt    counters
+}
+
+// NewSerSlave returns a modbus-over-serial slave (server) that uses
+// the given serial receiver (rcv) and transmitter (trx).
+func NewSerSlave(rcv SerReceiver, trx SerTransmitter) {
+	return &SerSlave{rcv: rcv, trx: trx}
+}
+
+// SerSlaveConf are the modbus-over-serial slave (server)
+// configuration parameters used by function NewSerSlaveStd. Zero
+// values for all fields will be replaced by reasonable defaults.
+type SerSlaveConf struct {
 	// Node-Id this slave responds to. If zero, all request are
 	// passed to the handler, which decides to process them or
 	// not.
@@ -52,59 +79,52 @@ type SerSlave struct {
 	SyncWaitMax time.Duration
 	// Use ASCII frame encoding
 	Ascii bool
-
-	conn   DeadlineReadWriter
-	rcv    SerReceiver
-	synced bool
-	cnt    counters
-	reqBuf [MaxSerADU]byte
-	resBuf [MaxSerADU]byte
 }
 
-// Init initializes the ModBus slave. Argument conn is the
-// DeadlineReadWriter where the slave will receive requests and
-// transmit responses to. You must call Init before starting the
-// server. You must not call it again while the server is running
-// (i.e. after calling method Start and until it returns).
-func (ss *SerSlave) Init(conn DeadlineReadWriter) {
+// NewSerSlaveStd returns a modbus-over-serial slave (server) that
+// uses the standard receiver (SerReceiver{RTU|ASCII}) and transmitter
+// (SerTransmitter{RTU|ASCII}). The slave receives and transmits
+// frames on conn, and is configured using the parameters in cfg.
+func NewSerSlaveStd(conn DeadlineReadWriter, cfg SerSlaveConf) *SerSlave {
+	var ss *SerSlave
 	// Fixup params
-	if ss.Timeout <= 0 {
-		ss.Timeout = DflSerSlvTimeout
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = DflSerSlvTimeout
 	}
-	if ss.FrameTimeout <= 0 {
+	if cfg.FrameTimeout <= 0 {
 		// Calc from baudrate ??
-		ss.FrameTimeout = DflSerSlvFrameTimeout
+		cfg.FrameTimeout = DflSerSlvFrameTimeout
 	}
-	if ss.Delay <= 0 {
-		ss.Delay = DflSerDelay
+	if cfg.Delay <= 0 {
+		cfg.Delay = DflSerDelay
 	}
-	if ss.SyncDelay <= 0 {
-		ss.SyncDelay = DflSerSlvSyncDelay
+	if cfg.SyncDelay <= 0 {
+		cfg.SyncDelay = DflSerSlvSyncDelay
 	}
-	if ss.SyncWaitMax <= 0 {
-		ss.SyncWaitMax = DflSerSyncWaitMax
+	if cfg.SyncWaitMax <= 0 {
+		cfg.SyncWaitMax = DflSerSyncWaitMax
 	}
-	ss.conn = conn
-	if ss.Ascii {
-		// ...
+	if cfg.Ascii {
+		panic("TODO(npat): ASCII encoding not supported!")
 	} else {
 		// Create and configure receiver
-		rcv := NewSerReceiverRTU(ss.conn)
-		rcv.FrameTimeout = ss.FrameTimeout
-		rcv.SyncDelay = ss.SyncDelay
-		rcv.SyncWaitMax = ss.SyncWaitMax
+		rcv := NewSerReceiverRTU(conn)
+		rcv.FrameTimeout = cfg.FrameTimeout
+		rcv.SyncDelay = cfg.SyncDelay
+		rcv.SyncWaitMax = cfg.SyncWaitMax
 		ss.rcv = rcv
+		// Create and configure transmitter
+		trx := NewSerTransmitterRTU(conn)
+		trx.Baudrate = cfg.Baudrate
+		trx.Delay = cfg.Delay
+		// Create and configure slave
+		ss = NewSerSlave(rcv, trx)
+		ss.NodeId = cfg.NodeId
+		ss.SerHandler = cfg.SerHandler
+		ss.SerHandlerRaw = cfg.SerHandlerRaw
+		ss.Timeout = cfg.Timeout
 	}
 	ss.cnt.Init(SlvCntNum)
-}
-
-// Start starts the slave. The slave is considered running after
-// calling this method, and until it returns. It is typical to execute
-// this method in a separate goroutine. To stop a running slave close
-// the DeadlineReadWriter you supplied at Init, and wait for Start to
-// return.
-func (ss *SerSlave) Start() error {
-	return ss.run()
 }
 
 func (ss *SerSlave) handle(reqADU SerADU) SerADU {
@@ -160,7 +180,12 @@ func (ss *SerSlave) transmit(res SerADU) error {
 	return nil
 }
 
-func (ss *SerSlave) run() error {
+// Start starts the slave. The slave is considered running after
+// calling this method, and until it returns. It is typical to execute
+// this method in a separate goroutine. To stop a running slave close
+// the DeadlineReadWriter used by the transmitter and receiver, and
+// wait for Start to return.
+func (ss *SerSlave) Start() error {
 	// Wait for request timeout. Go back waiting if it expires.
 	const reqTmo = 1 * time.Second
 	var err error
